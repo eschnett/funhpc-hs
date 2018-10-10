@@ -5,6 +5,7 @@
 {-# OPTIONS_GHC -foptimal-applicative-do #-}
 {-# LANGUAGE ParallelListComp #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 module Server (main) where
 
@@ -13,11 +14,12 @@ import Control.Exception
 import Control.Monad
 import Control.Monad.Loops (whileM_)
 import Control.Parallel.MPI.Fast as Fast
--- import Control.Parallel.MPI.Simple
-import Data.Array.Storable
+import qualified Control.Parallel.MPI.Simple as Simple
 import Data.Foldable
 import Data.IORef
 import Data.Maybe
+import Data.Serialize.Text ()
+import qualified Data.Text as T
 
 
 
@@ -31,7 +33,7 @@ main = bracket_ (do ts <- initThread Multiple
                     sendqueue <- newMVar []
                     termsig <- newEmptyMVar
                     let sendto = exec sendqueue
-                    forkIO $ do when (rank == 0) (action sendto)
+                    forkIO $ do when (rank == 0) (manager sendto)
                                 putMVar termsig ()
                     server sendqueue termsig
                     return ()
@@ -39,25 +41,23 @@ main = bracket_ (do ts <- initThread Multiple
 
 
 
-type Msg = ()
+type Msg = T.Text
 
 server :: MVar [(Rank, Msg)] -> MVar () -> IO ()
 server sendqueue termsig =
     do rank <- commRank commWorld
-       putStrLn $ "[Server " ++ show rank ++ " starting]"
+       putStrLn $ "[" ++ show rank ++ "] Server starting"
        sendreqs <- prepareSends
-       recvreq <- prepareRecv
        termreq <- prepareTerminate
        whileM_ (not <$> terminateDone termreq)
                  (do handleSendQueue sendqueue sendreqs
                      handleSends sendreqs
-                     handleRecv recvreq
+                     handleRecv
                      checkTerminate termsig termreq
                  )
        finalizeSendQueue sendqueue
        finalizeSends sendreqs
-       finalizeRecv recvreq
-       putStrLn $ "[Server " ++ show rank ++ " done]"
+       putStrLn $ "[" ++ show rank ++ "] Server done"
        return ()
 
 exec :: MVar [(Rank, Msg)] -> Rank -> Msg -> IO ()
@@ -68,17 +68,17 @@ exec sendqueue rank msg =
 
 
 
-type Buf = StorableArray Int Int
+-- type Buf = StorableArray Int Int
+type Buf = Msg
 
 handleSendQueue :: MVar [(Rank, Msg)] -> IORef [(Buf, Request)] -> IO ()
 handleSendQueue sendqueue sendreqs =
     do sq <- takeMVar sendqueue
        putMVar sendqueue []
        newreqs <- forM sq $ \(rank, msg) ->
-                    do buf <- newArray_ @StorableArray @Int (0 :: Int, -1)
-                       req <- isend commWorld rank unitTag buf
+                    do req <- Simple.isend commWorld rank unitTag msg
                        putStrLn "isend"
-                       return (buf, req)
+                       return (msg, req)
        oldreqs <- readIORef sendreqs
        writeIORef sendreqs (newreqs ++ oldreqs)
 
@@ -102,35 +102,20 @@ handleSends sendreqs =
 finalizeSends :: IORef [(Buf, Request)] -> IO ()
 finalizeSends sendreqs =
     do reqs <- readIORef sendreqs
-       -- TODO: use cancelAll
+       -- TODO: don't cancel
        mapM_ (\(buf, req) -> cancel req) reqs
        writeIORef sendreqs []
 
 
 
-prepareRecv :: IO (IORef (Buf, Request))
-prepareRecv =
-    do buf <- newArray_ @StorableArray @Int (0 :: Int, -1)
-       req <- irecv commWorld 0 unitTag buf
-       newIORef (buf, req)
-
-handleRecv :: IORef (Buf, Request) -> IO ()
-handleRecv recvreq =
-    do (buf, req) <- readIORef recvreq
-       mst <- test req
-       when (isJust mst) $
-            do -- mst <- iprobe commWorld 0 unitTag
-               -- arr <- newArray_ @StorableArray @Int (0 :: Int, -1)
-               -- send commWorld 0 unitTag arr
-               rank <- commRank commWorld
-               putStrLn $ "recv " ++ show rank
-               newreq <- irecv commWorld 0 unitTag buf
-               writeIORef recvreq (buf, newreq)
-
-finalizeRecv :: IORef (Buf, Request) -> IO ()
-finalizeRecv recvreq =
-    do (buf, req) <- readIORef recvreq
-       cancel req
+handleRecv :: IO ()
+handleRecv =
+    do mst <- iprobe commWorld 0 unitTag
+       case mst of
+         Nothing -> return ()
+         Just _ -> do (msg, st) <- Simple.recv commWorld 0 unitTag
+                      rank <- commRank commWorld
+                      putStrLn $ "[" ++ show rank ++ "]: " ++ msg
 
 
 
@@ -158,11 +143,11 @@ terminateDone termreq =
 
 
 
-action :: (Rank -> Msg -> IO ()) -> IO ()
-action sendto =
+manager :: (Rank -> Msg -> IO ()) -> IO ()
+manager sendto =
     do putStrLn "Hello, World!"
        size <- commSize commWorld
-       for_ [0 .. size-1] $ \p -> sendto (toRank p) ()
+       for_ [0 .. size-1] $ \p -> sendto (toRank p) "Hello, World!"
        putStrLn "waiting..."
        threadDelay 1000000
        putStrLn "Done."

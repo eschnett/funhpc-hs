@@ -24,8 +24,10 @@ library:
   dependencies:
     - array
     - base
+    - cereal-text
     - haskell-mpi
     - monad-loops
+    - text
   source-dirs: library
 
 executables:
