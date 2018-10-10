@@ -35,12 +35,14 @@ resolver: lts-12.12
 #  - wai
 packages:
   - .
-  - /Users/eschnett/src/hs/haskell-mpi
+  # - /Users/eschnett/src/hs/haskell-mpi
 
 # Dependency packages to be pulled from upstream that are not in the resolver
 # using the same syntax as the packages field.
 # (e.g., acme-missiles-0.3)
-extra-deps: []
+extra-deps:
+  - git: https://github.com/eschnett/haskell-mpi.git
+    commit: 0a03d9d49fe9d9874e8a26afe7536f06b0e63cf3
 
 # Override default flag values for local packages and extra-deps
 # flags: {}
@@ -62,8 +64,10 @@ extra-deps: []
 # Extra directories used by stack for building
 extra-include-dirs:
   - /opt/local/include/openmpi-mp
+  - /usr/lib/openmpi/include
 extra-lib-dirs:
   - /opt/local/lib/openmpi-mp
+  - /usr/lib/openmpi/lib
 
 # Allow a newer minor version of GHC than the snapshot specifies
 # compiler-check: newer-minor
