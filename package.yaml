@@ -1,0 +1,68 @@
+# This YAML file describes your package. Stack will automatically generate a
+# Cabal file when you run `stack build`. See the hpack website for help with
+# this file: <https://github.com/sol/hpack>.
+name: funhpc
+version: '0.0.0.0'
+github: "eschnett/funhpc"
+license: Apache-2.0
+author: "Erik Schnetter"
+maintainer: "Erik Schnetter"
+# synopsis: A new Haskeleton package.
+# description: funhpc is a new Haskeleton package.
+# category: Other
+
+extra-source-files:
+  - CHANGELOG.md
+  - LICENSE
+  - package.yaml
+  - README.md
+  - stack.yaml
+
+ghc-options: -Wall
+
+library:
+  dependencies:
+    - array
+    - base
+    - haskell-mpi
+    - monad-loops
+  source-dirs: library
+
+executables:
+  funhpc:
+    source-dirs: executable
+    main: Main.hs
+    dependencies:
+      - base
+      - funhpc
+    ghc-options:
+      - -rtsopts
+      - -threaded
+      - -with-rtsopts=-N
+
+benchmarks:
+  funhpc-benchmarks:
+    source-dirs: benchmark
+    main: Main.hs
+    dependencies:
+      - base
+      - funhpc
+      - criterion
+    ghc-options:
+      - -rtsopts
+      - -threaded
+      - -with-rtsopts=-N
+
+tests:
+  funhpc-test-suite:
+    source-dirs: test-suite
+    main: Main.hs
+    dependencies:
+      - base
+      - funhpc
+      - tasty
+      - tasty-hspec
+    ghc-options:
+      - -rtsopts
+      - -threaded
+      - -with-rtsopts=-N
