@@ -30,7 +30,7 @@ library:
 
 executables:
   funhpc:
-    source-dirs: executable
+    source-dirs: executables
     main: Main.hs
     dependencies:
       - base
@@ -42,7 +42,7 @@ executables:
 
 benchmarks:
   funhpc-benchmarks:
-    source-dirs: benchmark
+    source-dirs: benchmarks
     main: Main.hs
     dependencies:
       - base
@@ -55,7 +55,7 @@ benchmarks:
 
 tests:
   funhpc-test-suite:
-    source-dirs: test-suite
+    source-dirs: tests
     main: Main.hs
     dependencies:
       - base
