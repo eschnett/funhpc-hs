@@ -15,11 +15,13 @@ import Control.Monad
 import Control.Monad.Loops (whileM_)
 import Control.Parallel.MPI.Fast as Fast
 import qualified Control.Parallel.MPI.Simple as Simple
+import qualified Data.ByteString as B
 import Data.Foldable
 import Data.IORef
 import Data.Maybe
 import Data.Serialize.Text ()
 import qualified Data.Text as T
+import Data.Text.Encoding
 
 
 
@@ -66,19 +68,23 @@ exec sendqueue rank msg =
        let newsq = (rank, msg) : sq
        putMVar sendqueue newsq
 
+exec' :: Msg -> IO ()
+exec' msg =
+  do rank <- commRank commWorld
+     putStrLn $ "[" ++ show rank ++ "]: " ++ show msg
 
 
--- type Buf = StorableArray Int Int
-type Buf = Msg
+
+type Buf = B.ByteString
 
 handleSendQueue :: MVar [(Rank, Msg)] -> IORef [(Buf, Request)] -> IO ()
 handleSendQueue sendqueue sendreqs =
     do sq <- takeMVar sendqueue
        putMVar sendqueue []
        newreqs <- forM sq $ \(rank, msg) ->
-                    do req <- Simple.isend commWorld rank unitTag msg
-                       putStrLn "isend"
-                       return (msg, req)
+                    do let buf = encodeUtf8 msg
+                       req <- Simple.isendBS commWorld rank unitTag buf
+                       return (buf, req)
        oldreqs <- readIORef sendreqs
        writeIORef sendreqs (newreqs ++ oldreqs)
 
@@ -96,26 +102,29 @@ handleSends :: IORef [(Buf, Request)] -> IO ()
 handleSends sendreqs =
     do reqs <- readIORef sendreqs
        -- TODO: use testSome
-       newreqs <- filterM (\(buf, req) -> isNothing <$> test req) reqs
+       newreqs <- filterM (\(_, req) -> isNothing <$> test req) reqs
        writeIORef sendreqs newreqs
 
 finalizeSends :: IORef [(Buf, Request)] -> IO ()
 finalizeSends sendreqs =
     do reqs <- readIORef sendreqs
        -- TODO: don't cancel
-       mapM_ (\(buf, req) -> cancel req) reqs
+       mapM_ (\(_, req) -> cancel req) reqs
        writeIORef sendreqs []
 
 
 
 handleRecv :: IO ()
 handleRecv =
-    do mst <- iprobe commWorld 0 unitTag
-       case mst of
-         Nothing -> return ()
-         Just _ -> do (msg, st) <- Simple.recv commWorld 0 unitTag
-                      rank <- commRank commWorld
-                      putStrLn $ "[" ++ show rank ++ "]: " ++ msg
+  whileM_ (do mst <- iprobe commWorld 0 unitTag
+              case mst of
+                Nothing -> return False
+                Just _ -> do (buf, _) <- Simple.recvBS commWorld 0 unitTag
+                             let msg = decodeUtf8 buf
+                             forkIO $ exec' msg
+                             return True
+          )
+          (return ())
 
 
 

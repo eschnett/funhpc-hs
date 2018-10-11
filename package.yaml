@@ -24,6 +24,7 @@ library:
   dependencies:
     - array
     - base
+    - bytestring
     - cereal-text
     - haskell-mpi
     - monad-loops
