@@ -12,7 +12,7 @@ module Server (main) where
 import Control.Concurrent
 import Control.Exception
 import Control.Monad
-import Control.Monad.Loops (whileM_)
+import Control.Monad.Loops (whileJust_, whileM_)
 import Control.Parallel.MPI.Fast as Fast
 import qualified Control.Parallel.MPI.Simple as Simple
 import qualified Data.ByteString as B
@@ -30,16 +30,15 @@ main = bracket_ (do ts <- initThread Multiple
                     when (ts < Multiple) $
                          throwIO $ PatternMatchFail "initThread < Multiple"
                 )
-                finalize
-                (do rank <- commRank commWorld
-                    sendqueue <- newMVar []
-                    termsig <- newEmptyMVar
-                    let sendto = exec sendqueue
-                    forkIO $ do when (rank == 0) (manager sendto)
-                                putMVar termsig ()
-                    server sendqueue termsig
-                    return ()
-                )
+                finalize $
+                do rank <- commRank commWorld
+                   sendqueue <- newMVar []
+                   termsig <- newEmptyMVar
+                   let sendto = exec sendqueue
+                   forkIO $ do when (rank == 0) (manager sendto)
+                               putMVar termsig ()
+                   server sendqueue termsig
+                   return ()
 
 
 
@@ -51,12 +50,11 @@ server sendqueue termsig =
        putStrLn $ "[" ++ show rank ++ "] Server starting"
        sendreqs <- prepareSends
        termreq <- prepareTerminate
-       whileM_ (not <$> terminateDone termreq)
-                 (do handleSendQueue sendqueue sendreqs
-                     handleSends sendreqs
-                     handleRecv
-                     checkTerminate termsig termreq
-                 )
+       whileM_ (not <$> terminateDone termreq) $
+         do handleSendQueue sendqueue sendreqs
+            handleSends sendreqs
+            handleRecv
+            checkTerminate termsig termreq
        finalizeSendQueue sendqueue
        finalizeSends sendreqs
        putStrLn $ "[" ++ show rank ++ "] Server done"
@@ -116,15 +114,10 @@ finalizeSends sendreqs =
 
 handleRecv :: IO ()
 handleRecv =
-  whileM_ (do mst <- iprobe commWorld 0 unitTag
-              case mst of
-                Nothing -> return False
-                Just _ -> do (buf, _) <- Simple.recvBS commWorld 0 unitTag
-                             let msg = decodeUtf8 buf
-                             forkIO $ exec' msg
-                             return True
-          )
-          (return ())
+  whileJust_ (iprobe commWorld 0 unitTag) $ \_ ->
+             do (buf, _) <- Simple.recvBS commWorld 0 unitTag
+                let msg = decodeUtf8 buf
+                forkIO $ exec' msg
 
 
 
