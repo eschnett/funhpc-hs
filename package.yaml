@@ -1,15 +1,12 @@
-# This YAML file describes your package. Stack will automatically generate a
-# Cabal file when you run `stack build`. See the hpack website for help with
-# this file: <https://github.com/sol/hpack>.
-name: funhpc
-version: '0.0.0.0'
-github: "eschnett/funhpc"
+name: funhpc-hs
+version: '0.1.0.0'
+github: "eschnett/funhpc-hs"
 license: Apache-2.0
-author: "Erik Schnetter"
-maintainer: "Erik Schnetter"
-# synopsis: A new Haskeleton package.
-# description: funhpc is a new Haskeleton package.
-# category: Other
+author: "Erik Schnetter <schnetter@gmail.com>"
+maintainer: "Erik Schnetter <schnetter@gmail.com>"
+category: Distributed Computing
+synopsis: Functional HPC Programming (using Haskell)
+description: Functional HPC Programming (using Haskell)
 
 extra-source-files:
   - CHANGELOG.md
@@ -18,26 +15,81 @@ extra-source-files:
   - README.md
   - stack.yaml
 
-ghc-options: -Wall
+ghc-options:
+  - -foptimal-applicative-do
+  - -funbox-strict-fields
+  - -Wall
+  - -Wcompat
+  - -Wincomplete-record-updates
+  - -Wincomplete-uni-patterns
+  - -Wredundant-constraints
+  - -Wno-unused-matches
+
+default-extensions:
+  - ApplicativeDo
+  - BangPatterns
+  - ConstraintKinds
+  - DataKinds
+  - DefaultSignatures
+  - DeriveFoldable
+  - DeriveFunctor
+  - DeriveGeneric
+  - DeriveLift
+  - DeriveTraversable
+  - DerivingStrategies
+  - EmptyCase
+  - ExistentialQuantification
+  - FlexibleContexts
+  - FlexibleInstances
+  - FunctionalDependencies
+  - GADTs
+  - GeneralizedNewtypeDeriving
+  - InstanceSigs
+  - KindSignatures
+  - LambdaCase
+  - MultiParamTypeClasses
+  - MultiWayIf
+  - NamedFieldPuns
+  - OverloadedStrings
+  - ParallelListComp
+  - PatternSynonyms
+  - RankNTypes
+  - ScopedTypeVariables
+  - StandaloneDeriving
+  - TupleSections
+  - TypeApplications
+  - TypeFamilies
+  - TypeFamilyDependencies
+  - TypeOperators
+  - TypeSynonymInstances
+  - UnicodeSyntax
+  # more controversial?
+  - AllowAmbiguousTypes
+  - MonadComprehensions
+  - PackageImports
+  - PolyKinds
+  - TypeInType
 
 library:
   dependencies:
     - array
     - base
     - bytestring
+    - cereal
     - cereal-text
-    - haskell-mpi
     - monad-loops
+    - mpi-hs
     - text
-  source-dirs: library
+  source-dirs: lib
 
 executables:
   funhpc:
-    source-dirs: executables
-    main: Main.hs
+    source-dirs: src
+    main: FunHPC.hs
     dependencies:
       - base
-      - funhpc
+      - funhpc-hs
+      - mpi-hs
     ghc-options:
       - -rtsopts
       - -threaded
@@ -45,11 +97,11 @@ executables:
 
 benchmarks:
   funhpc-benchmarks:
-    source-dirs: benchmarks
+    source-dirs: bench
     main: Main.hs
     dependencies:
       - base
-      - funhpc
+      - funhpc-hs
       - criterion
     ghc-options:
       - -rtsopts
@@ -58,11 +110,11 @@ benchmarks:
 
 tests:
   funhpc-test-suite:
-    source-dirs: tests
+    source-dirs: test
     main: Main.hs
     dependencies:
       - base
-      - funhpc
+      - funhpc-hs
       - tasty
       - tasty-hspec
     ghc-options:
