@@ -50,6 +50,7 @@ default-extensions:
   - MultiParamTypeClasses
   - MultiWayIf
   - NamedFieldPuns
+  - OverloadedLists
   - OverloadedStrings
   - ParallelListComp
   - PatternSynonyms
@@ -72,20 +73,18 @@ default-extensions:
 
 library:
   dependencies:
-    - array
     - base
-    - bytestring
-    - cereal
-    - cereal-text
+    - containers
     - monad-loops
     - mpi-hs
-    - text
   source-dirs: lib
+  extra-libraries:
+    - mpi
 
 executables:
   funhpc:
     source-dirs: src
-    main: FunHPC.hs
+    main: Main.hs
     dependencies:
       - base
       - funhpc-hs
@@ -101,15 +100,15 @@ benchmarks:
     main: Main.hs
     dependencies:
       - base
-      - funhpc-hs
       - criterion
+      - funhpc-hs
     ghc-options:
       - -rtsopts
       - -threaded
       - -with-rtsopts=-N
 
 tests:
-  funhpc-test-suite:
+  funhpc-tests:
     source-dirs: test
     main: Main.hs
     dependencies:
