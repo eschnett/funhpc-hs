@@ -21,7 +21,8 @@
 
 module Control.Distributed.MPI.Server
   ( runServer
-  , remote)
+  , remote
+  , local)
 where
 
 import Control.Concurrent
@@ -177,3 +178,12 @@ remote'' :: Ref (MVar a) -> a -> IO ()
 remote'' !ref val =
   do mvar <- resolveRef ref
      putMVar mvar val
+
+
+
+local :: (a -> IO b) -> a -> IO (MVar b)
+local f x =
+  do mvar <- newEmptyMVar
+     _ <- forkIO $ do r <- f x
+                      putMVar mvar r
+     return mvar
