@@ -1,7 +1,7 @@
 import Control.Concurrent
-import GHC.Exts
 
 import qualified Control.Distributed.MPI as MPI
+import Control.Distributed.MPI.Ref
 import Control.Distributed.MPI.Server
 
 
@@ -24,9 +24,10 @@ runBounce =
      msg' <- takeMVar ftr
      putStrLn $ "Received: " ++ show msg'
 
+{-# NOINLINE bounce #-}
 bounce :: String -> IO String
-bounce msg =
-  do rank <- MPI.commRank (lazy MPI.commWorld)
+bounce !msg =
+  do rank <- MPI.commRank MPI.commWorld
      return $ "[" ++ show rank ++ "]: " ++ msg
 
 
@@ -62,9 +63,10 @@ runTree =
      n' <- tree (0, n)
      putStrLn $ "Result: " ++ show n'
 
+{-# NOINLINE tree #-}
 tree :: (Int, Int) -> IO Int
 tree (r, n) =
-  do size <- MPI.commSize (lazy MPI.commWorld)
+  do size <- MPI.commSize MPI.commWorld
      let n' = n - 1
      let n1 = n' `div` 2
      let n2 = n' - n1

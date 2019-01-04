@@ -9,7 +9,6 @@ synopsis: Functional HPC Programming (using Haskell)
 description: Functional HPC Programming (using Haskell)
 
 extra-source-files:
-  - CHANGELOG.md
   - LICENSE
   - package.yaml
   - README.md
@@ -28,6 +27,8 @@ ghc-options:
 default-extensions:
   - ApplicativeDo
   - BangPatterns
+  - BinaryLiterals
+  - BlockArguments
   - ConstraintKinds
   - DataKinds
   - DefaultSignatures
@@ -54,6 +55,7 @@ default-extensions:
   - OverloadedStrings
   - ParallelListComp
   - PatternSynonyms
+  - QuantifiedConstraints
   - RankNTypes
   - ScopedTypeVariables
   - StandaloneDeriving
@@ -74,6 +76,8 @@ default-extensions:
 library:
   dependencies:
     - base
+    - binary
+    - bytestring
     - containers
     - monad-loops
     - mpi-hs

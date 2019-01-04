@@ -1,16 +1,16 @@
 # Resolver to choose a 'specific' stackage snapshot or a compiler version.
-resolver: lts-12.16
+resolver: lts-13.1
 
 # User packages to be built.
 packages:
   - .
 
 extra-deps:
-  - packman-0.5.0
-#   - mpi-hs-0.4.1.0
-#   - https://github.com/eschnett/mpi-hs/archive/v0.4.1.0.tar.gz
-#   - git: https://github.com/eschnett/mpi-hs.git
-#     commit: 8fe90abc8bbf6f0a3667353a5801eda71a01078b # v0.2.0.0
+  # - packman-0.5.0
+  # - mpi-hs-0.5.0.0
+  # - https://github.com/eschnett/mpi-hs/archive/v0.4.1.0.tar.gz
+  # - git: https://github.com/eschnett/mpi-hs.git
+  #   commit: 8fe90abc8bbf6f0a3667353a5801eda71a01078b # v0.2.0.0
   - ../mpi-hs
 
 # Extra directories used by stack for building

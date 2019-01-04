@@ -2,17 +2,17 @@ version: 2
 jobs:
   build:
     docker:
-      - image: fpco/stack-build:lts-12.16
+      - image: fpco/stack-build:lts-12.22
     working_directory: /home/stackage
     steps:
       - checkout
       - restore_cache:
-          key: cache-lts-12.16
+          key: cache-lts-12.22
       - run: sudo apt update
       - run: sudo apt -y install libopenmpi-dev openmpi-bin
       - run: stack --no-terminal --system-ghc build --haddock --test --only-dependencies
       - save_cache:
-          key: cache-lts-12.16
+          key: cache-lts-12.22
           paths:
             - ~/.stack
       - run: stack --no-terminal --system-ghc install --haddock --test
