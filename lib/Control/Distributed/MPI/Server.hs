@@ -1,66 +1,35 @@
+{-# LANGUAGE StaticPointers #-}
+
 module Control.Distributed.MPI.Server
-  ( funHPCAssert
-  , worldComm
-  , worldRank
-  , worldRoot
-  , worldSize
-  , runServer
+  ( runServer
   , rexec
+  , rsend
+  , rfetch
   ) where
 
 import Control.Concurrent
-import Control.Exception
 import Control.Monad
 import Control.Monad.Loops
+import Data.Binary
 import Data.IORef
 import Data.Maybe
 import System.IO
-import System.IO.Unsafe
 import Type.Reflection
 
-import Data.Binary
+import Control.Distributed.Closure
 
-import Control.Distributed.MPI.Action
+import Control.Distributed.MPI.World
 import qualified Control.Distributed.MPI.Binary as MPI
-
-
-
--- | Exception type indicating an error
-newtype FunHPCException = FunHPException String
-  deriving (Eq, Ord, Read, Show, Typeable)
-instance Exception FunHPCException
-
-funHPCAssert :: Bool -> String -> IO ()
-funHPCAssert cond msg = when (not cond) $ throw (FunHPException msg)
-
-
-
--- Global constants
-worldComm :: MPI.Comm
-worldComm = MPI.commWorld
-
-worldRoot :: MPI.Rank
-worldRoot = MPI.rootRank
-
-worldRank :: MPI.Rank
-worldRank = unsafePerformIO (MPI.commRank worldComm)
-
-worldSize :: MPI.Rank
-worldSize = unsafePerformIO (MPI.commSize worldComm)
-
-
-
-serverTag :: MPI.Tag
-serverTag = MPI.unitTag
+import Data.Distributed.GlobalPtr
 
 
 
 runServer :: IO () -> IO ()
 runServer mainTask =
-  MPI.mainMPI $
-  do when (worldRank == worldRoot) $
-       putStrLn ( "*** Starting MPI server on " ++ show worldSize ++
-                  " processes ***")
+  MPI.mainMPI
+  do when (worldRank == worldRoot)
+       do putStrLn ("*** Starting MPI server on " ++ show worldSize ++
+                    " processes ***")
 
      breq <- newIORef Nothing
      let signalDone = do req <- MPI.ibarrier worldComm
@@ -70,9 +39,12 @@ runServer mainTask =
                           Nothing -> return False
                           Just req -> isJust <$> MPI.test_ req
 
-     _ <- forkIO server
+     _ <- forkIO rexecServer
+     -- _ <- forkIO rsendServer
+     -- _ <- forkIO rfetchServer
+     -- _ <- forkIO rexec'Server
 
-     _ <- forkIO $
+     _ <- forkIO
        do when (worldRank == worldRoot) mainTask
           signalDone
 
@@ -81,9 +53,9 @@ runServer mainTask =
      hFlush stdout
      hFlush stderr
      MPI.barrier worldComm
-     when (worldRank == worldRoot) $ putStrLn "*** Done. ***"
+     when (worldRank == worldRoot) do putStrLn "*** Done. ***"
 
-     when (worldRank == worldRoot) $
+     when (worldRank == worldRoot)
        do putStrLn ""
           putStrLn "Calling MPI_Abort to terminate the program."
           putStrLn "Please ignore any warnings about MPI_Abort being called."
@@ -94,14 +66,122 @@ runServer mainTask =
 
 
 
-server :: IO ()
-server =
-  whileM_ (return True) $
-  do (act :: SomeAction) <- MPI.recv_ MPI.anySource serverTag worldComm
-     _ <- forkIO (run act)
+rexecTag :: MPI.Tag
+rexecTag = 1
+
+rexec :: MPI.Rank -> Closure (IO ()) -> IO ()
+rexec dest cl = MPI.send cl dest rexecTag worldComm
+
+rexecServer :: IO ()
+rexecServer =
+  forever
+  do (cl :: Closure (IO ())) <- MPI.recv_ MPI.anySource rexecTag worldComm
+     _ <- forkIO do unclosure cl
      return ()
 
 
 
-rexec :: (Action a, Binary a, Typeable a) => MPI.Rank -> a -> IO ()
-rexec dest act = MPI.send (makeAction act) dest serverTag worldComm
+type GMVar a = GlobalPtr (MVar a)
+
+rsend :: forall a.
+         ( Static (Binary a), Static (Binary (GMVar a))
+         , Static (Typeable a), Static (Typeable (GMVar a)))
+      => GMVar a -> a -> IO ()
+rsend gptr val =
+  do let fun :: Closure ((GMVar a, a) -> IO ())
+         fun = closure (static putGptr)
+         args :: Closure (GMVar a, a)
+         args = cpure closureDict (gptr, val)
+         cl :: Closure (IO ())
+         cl = fun `cap` args
+     rexec (globalPtrRank gptr) cl
+
+putGptr :: (GMVar a, a) -> IO ()
+putGptr (gptr, val) =
+  do Just mvar <- deRefGlobalPtr gptr
+     putMVar mvar val
+
+
+
+rfetch :: forall a.
+          ( Static (Binary a), Static (Binary (GMVar a))
+          , Static (Typeable a), Static (Typeable (GMVar a)))
+       => GMVar a -> IO a
+rfetch gptr =
+  do mvar <- newEmptyMVar
+     rptr <- newGlobalPtr mvar
+     let fun :: Closure ( Dict ( Static (Binary a)
+                               , Static (Binary (GMVar a))
+                               , Static (Typeable a)
+                               , Static (Typeable (GMVar a))) ->
+                          (GMVar a, GMVar a) -> IO ())
+         fun = closure (static \Dict -> readGptr)
+     (args :: Closure (GMVar a, GMVar a)) <-
+       return (cpure closureDict (rptr, gptr))
+     (cl :: Closure (IO ())) <- return (fun `cap` closureDict `cap` args)
+     rexec (globalPtrRank gptr) cl
+     res <- takeMVar mvar
+     freeGlobalPtr rptr
+     return res
+
+readGptr :: ( Static (Binary a), Static (Binary (GMVar a))
+            , Static (Typeable a), Static (Typeable (GMVar a)))
+         => (GMVar a, GMVar a) -> IO ()
+readGptr (rptr, gptr) =
+  do Just mvar <- deRefGlobalPtr gptr
+     val <- readMVar mvar
+     rsend rptr val
+
+
+
+----------------------------------------------------------------------
+
+
+
+-- | Static 3-tuples
+instance ( Static c1, Static c2, Static c3
+         , Typeable c1, Typeable c2, Typeable c3
+         , (c1, c2, c3)) =>
+         Static (c1, c2, c3) where
+  closureDict =
+    static tupleDict `cap` closureDict `cap` closureDict `cap` closureDict
+    where tupleDict :: Dict d1 -> Dict d2 -> Dict d3 -> Dict (d1, d2, d3)
+          tupleDict Dict Dict Dict = Dict
+
+-- | Static 4-tuples
+instance ( Static c1, Static c2, Static c3, Static c4
+         , Typeable c1, Typeable c2, Typeable c3, Typeable c4
+         , (c1, c2, c3, c4)) =>
+         Static (c1, c2, c3, c4) where
+  closureDict =
+    static tupleDict `cap`
+    closureDict `cap` closureDict `cap` closureDict `cap` closureDict
+    where tupleDict :: Dict d1 -> Dict d2 -> Dict d3 -> Dict d4
+                    -> Dict (d1, d2, d3, d4)
+          tupleDict Dict Dict Dict Dict = Dict
+
+
+
+-- | Static Binary tuples
+instance ( Static (Binary a), Static (Binary b)
+         , Typeable a, Typeable b
+         , Binary (a, b)) =>
+         Static (Binary (a, b)) where
+  closureDict = static pairDict `cap` closureDict `cap` closureDict
+    where pairDict :: Dict (Binary x) -> Dict (Binary y) -> Dict (Binary (x, y))
+          pairDict Dict Dict = Dict
+
+-- | Static Typeable tuples
+instance ( Static (Typeable a), Static (Typeable b)
+         , Typeable a, Typeable b) =>
+         Static (Typeable (a, b)) where
+  closureDict = static pairDict `cap` closureDict `cap` closureDict
+    where pairDict ::
+            Dict (Typeable x) -> Dict (Typeable y) -> Dict (Typeable (x, y))
+          pairDict Dict Dict = Dict
+
+
+
+-- | Static Statics
+instance Static c => Static (Static c) where
+  closureDict = closureDict

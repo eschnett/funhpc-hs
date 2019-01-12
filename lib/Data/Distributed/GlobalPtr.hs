@@ -1,102 +1,74 @@
 {-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE StaticPointers #-}
 
 module Data.Distributed.GlobalPtr
-  ( GlobalConstraints
-  , GlobalPtr(..)
+  ( GlobalPtr(..)
   , newGlobalPtr
   , globalPtrRank
   , deRefGlobalPtr
   , freeGlobalPtr
-  , fetchGlobalPtr
   ) where
 
-import Control.Concurrent.MVar
-import qualified Data.ByteString as B
-import qualified Data.ByteString.Lazy as BL
-import Data.Maybe
+import Control.Exception (assert)
+import Data.Coerce
 import Foreign
 import GHC.Generics
+import Type.Reflection
 
+import Control.Distributed.Closure
 import Data.Binary
 
-import Control.Distributed.MPI.Action
-import Data.Distributed.LocalPtr
 import qualified Control.Distributed.MPI.Binary as MPI
-import Control.Distributed.MPI.Server
+import Control.Distributed.MPI.World
 
 
 
-class (Binary a, LocalConstraints a) => GlobalConstraints a
-instance (Binary a, LocalConstraints a) => GlobalConstraints a
+-- | A pointer to an object that lives on a particular rank
+data GlobalPtr a where
+  GlobalPtr :: MPI.Rank -> StablePtr a -> GlobalPtr a
+  deriving (Eq, Generic)
 
-data GlobalPtr a = GlobalPtr (LocalPtr a) (LocalPtr (IO B.ByteString))
-  deriving (Generic)
-
-instance Eq (GlobalPtr a) where
-  GlobalPtr lptr1 _ == GlobalPtr lptr2 _ = lptr1 == lptr2
-
-instance GlobalConstraints a => Binary (GlobalPtr a) where
-  put (GlobalPtr lptr sptr) =
-    do put lptr
-       put sptr
+instance Typeable a => Binary (GlobalPtr a) where
+  put (GlobalPtr rank ptr) =
+    do put rank
+       put @Word (coerce (ptrToWordPtr (castStablePtrToPtr ptr)))
   get =
-    do lptr <- get
-       sptr <- get
-       return (GlobalPtr lptr sptr)
+    do rank <- get
+       ptr <- (castPtrToStablePtr . wordPtrToPtr . coerce) <$> get @Word
+       return (GlobalPtr rank ptr)
 
-newGlobalPtr :: GlobalConstraints a => a -> IO (GlobalPtr a)
+instance (Typeable a, Static (Typeable a), Typeable (GlobalPtr a)) =>
+         Static (Typeable (GlobalPtr a)) where
+  closureDict = closure (static serdict) `cap` closureDict
+    where serdict :: Dict (Typeable b) -> Dict (Typeable (GlobalPtr b))
+          serdict Dict = Dict
+
+instance (Typeable a, Static (Typeable a), Binary (GlobalPtr a)) =>
+         Static (Binary (GlobalPtr a)) where
+  closureDict = closure (static serdict) `cap` closureDict
+    where serdict :: Dict (Typeable b) -> Dict (Binary (GlobalPtr b))
+          serdict Dict = Dict
+
+-- instance (Typeable a, Static (Typeable a), Serializable (GlobalPtr a)) =>
+--          Static (Serializable (GlobalPtr a)) where
+--   closureDict = closure (static serdict) `cap` closureDict
+--     where serdict :: Dict (Typeable b) -> Dict (Serializable (GlobalPtr b))
+--           serdict Dict = Dict
+
+newGlobalPtr :: a -> IO (GlobalPtr a)
 newGlobalPtr x =
-  do lptr <- newLocalPtr x
-     let (LocalPtr _ ptr) = lptr
-     sptr <- newLocalPtr (encDeRef ptr)
-     return (GlobalPtr lptr sptr)
-       where encDeRef ptr = do val <- deRefStablePtr ptr
-                               return (BL.toStrict (encode val))
+  do ptr <- newStablePtr x
+     return (GlobalPtr worldRank ptr)
 
 globalPtrRank :: GlobalPtr a -> MPI.Rank
-globalPtrRank (GlobalPtr lptr _) = localPtrRank lptr
+globalPtrRank (GlobalPtr rank _) = rank
 
 deRefGlobalPtr :: GlobalPtr a -> IO (Maybe a)
-deRefGlobalPtr (GlobalPtr lptr _) = deRefLocalPtr lptr
+deRefGlobalPtr (GlobalPtr rank ptr) =
+  if rank == worldRank
+  then Just <$> deRefStablePtr ptr
+  else return Nothing
 
 freeGlobalPtr :: GlobalPtr a -> IO ()
-freeGlobalPtr (GlobalPtr lptr sptr) =
-  do freeLocalPtr lptr
-     freeLocalPtr sptr
-
-fetchGlobalPtr :: GlobalConstraints a => GlobalPtr a -> IO a
-fetchGlobalPtr (GlobalPtr (LocalPtr rank ptr) sptr) =
-  if rank == worldRank
-  then deRefStablePtr ptr
-  else do mvar <- newEmptyMVar
-          lPutDec <- newLocalPtr $ putMVar mvar . decode . BL.fromStrict
-          rexec rank (FetchGlobalPtr' worldRank lPutDec sptr)
-          val <- takeMVar mvar
-          freeLocalPtr lPutDec
-          return val
-
-data FetchGlobalPtr' = FetchGlobalPtr'
-                       MPI.Rank
-                       (LocalPtr (B.ByteString -> IO ()))
-                       (LocalPtr (IO B.ByteString))
-  deriving (Eq, Generic)
-
-instance Binary FetchGlobalPtr'
-
-instance Action FetchGlobalPtr' where
-  run (FetchGlobalPtr' rank lPutDec lEncDeRef) =
-    do encDeRef <- fromJust <$> deRefLocalPtr lEncDeRef
-       buf <- encDeRef
-       rexec rank (FetchGlobalPtr'' lPutDec buf)
-
-data FetchGlobalPtr'' = FetchGlobalPtr''
-                        (LocalPtr (B.ByteString -> IO ()))
-                        B.ByteString
-  deriving (Eq, Generic)
-
-instance Binary FetchGlobalPtr''
-
-instance Action FetchGlobalPtr'' where
-  run (FetchGlobalPtr'' lPutDec buf) =
-    do putDec <- fromJust <$> deRefLocalPtr lPutDec
-       putDec buf
+freeGlobalPtr (GlobalPtr rank ptr) =
+  assert (rank == worldRank) freeStablePtr ptr
