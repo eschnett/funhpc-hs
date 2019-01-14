@@ -78,6 +78,7 @@ library:
     - base
     - binary
     - bytestring
+    - constraints
     - containers
     - distributed-closure
     - monad-loops
@@ -92,6 +93,8 @@ executables:
     main: Main.hs
     dependencies:
       - base
+      - binary
+      - distributed-closure
       - funhpc-hs
       - mpi-hs
     ghc-options:

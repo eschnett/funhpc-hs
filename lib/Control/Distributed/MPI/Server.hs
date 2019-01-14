@@ -5,16 +5,17 @@ module Control.Distributed.MPI.Server
   , rexec
   , rsend
   , rfetch
+  , local
+  , remote
   ) where
 
 import Control.Concurrent
 import Control.Monad
 import Control.Monad.Loops
-import Data.Binary
+import Data.Constraint
 import Data.IORef
 import Data.Maybe
 import System.IO
-import Type.Reflection
 
 import Control.Distributed.Closure
 
@@ -40,9 +41,6 @@ runServer mainTask =
                           Just req -> isJust <$> MPI.test_ req
 
      _ <- forkIO rexecServer
-     -- _ <- forkIO rsendServer
-     -- _ <- forkIO rfetchServer
-     -- _ <- forkIO rexec'Server
 
      _ <- forkIO
        do when (worldRank == worldRoot) mainTask
@@ -83,105 +81,105 @@ rexecServer =
 
 type GMVar a = GlobalPtr (MVar a)
 
-rsend :: forall a.
-         ( Static (Binary a), Static (Binary (GMVar a))
-         , Static (Typeable a), Static (Typeable (GMVar a)))
-      => GMVar a -> a -> IO ()
-rsend gptr val =
-  do let fun :: Closure ((GMVar a, a) -> IO ())
-         fun = closure (static putGptr)
-         args :: Closure (GMVar a, a)
-         args = cpure closureDict (gptr, val)
-         cl :: Closure (IO ())
-         cl = fun `cap` args
-     rexec (globalPtrRank gptr) cl
 
-putGptr :: (GMVar a, a) -> IO ()
-putGptr (gptr, val) =
+
+rsend :: (Static (Serializable (GMVar a)), Static (Serializable a))
+      => GMVar a -> a -> IO ()
+rsend = rsend' closureDict closureDict
+
+rsend' :: Closure (Dict (Serializable (GMVar a)))
+       -> Closure (Dict (Serializable a))
+       -> GMVar a
+       -> a
+       -> IO ()
+rsend' cd1 cd2 gptr val =
+  case unclosure cd2 of
+    Dict ->
+      let fun = closure (static putGptr)
+          arg1 = cpure cd1 gptr
+          arg2 = cpure cd2 val
+      in rexec (globalPtrRank gptr) $ fun `cap` arg1 `cap` arg2
+
+putGptr :: GMVar a -> a -> IO ()
+putGptr gptr val =
   do Just mvar <- deRefGlobalPtr gptr
      putMVar mvar val
 
 
 
-rfetch :: forall a.
-          ( Static (Binary a), Static (Binary (GMVar a))
-          , Static (Typeable a), Static (Typeable (GMVar a)))
+rfetch :: (Static (Serializable (GMVar a)), Static (Serializable a))
        => GMVar a -> IO a
-rfetch gptr =
-  do mvar <- newEmptyMVar
-     rptr <- newGlobalPtr mvar
-     let fun :: Closure ( Dict ( Static (Binary a)
-                               , Static (Binary (GMVar a))
-                               , Static (Typeable a)
-                               , Static (Typeable (GMVar a))) ->
-                          (GMVar a, GMVar a) -> IO ())
-         fun = closure (static \Dict -> readGptr)
-     (args :: Closure (GMVar a, GMVar a)) <-
-       return (cpure closureDict (rptr, gptr))
-     (cl :: Closure (IO ())) <- return (fun `cap` closureDict `cap` args)
-     rexec (globalPtrRank gptr) cl
-     res <- takeMVar mvar
-     freeGlobalPtr rptr
-     return res
+rfetch = rfetch' closureDict closureDict
 
-readGptr :: ( Static (Binary a), Static (Binary (GMVar a))
-            , Static (Typeable a), Static (Typeable (GMVar a)))
-         => (GMVar a, GMVar a) -> IO ()
-readGptr (rptr, gptr) =
+rfetch' :: Closure (Dict (Serializable (GMVar a)))
+        -> Closure (Dict (Serializable a))
+        -> GMVar a
+        -> IO a
+rfetch' cd1 cd2 gptr =
+  case unclosure cd2 of
+    Dict ->
+      do mvar <- newEmptyMVar
+         rptr <- newGlobalPtr mvar
+         let fun = closure (static readGptr)
+             arg1 = cduplicate cd1
+             arg2 = cduplicate cd2
+         arg3 <- return (cpure cd1 rptr)
+         let arg4 = cpure cd1 gptr
+         cl <- return (fun `cap` arg1 `cap` arg2 `cap` arg3 `cap` arg4)
+         rexec (globalPtrRank gptr) cl
+         res <- takeMVar mvar
+         freeGlobalPtr rptr
+         return res
+
+readGptr :: Closure (Dict (Serializable (GMVar a)))
+         -> Closure (Dict (Serializable a))
+         -> GMVar a
+         -> GMVar a
+         -> IO ()
+readGptr cd1 cd2 rptr gptr =
   do Just mvar <- deRefGlobalPtr gptr
      val <- readMVar mvar
-     rsend rptr val
+     rsend' cd1 cd2 rptr val
 
 
 
-----------------------------------------------------------------------
+local :: (a -> IO b) -> a -> IO (MVar b)
+local fun arg =
+  do mvar <- newEmptyMVar
+     _ <- forkIO do res <- fun arg
+                    putMVar mvar res
+     return mvar
 
 
 
--- | Static 3-tuples
-instance ( Static c1, Static c2, Static c3
-         , Typeable c1, Typeable c2, Typeable c3
-         , (c1, c2, c3)) =>
-         Static (c1, c2, c3) where
-  closureDict =
-    static tupleDict `cap` closureDict `cap` closureDict `cap` closureDict
-    where tupleDict :: Dict d1 -> Dict d2 -> Dict d3 -> Dict (d1, d2, d3)
-          tupleDict Dict Dict Dict = Dict
+-- TODO: keep the value on the remote system, return a 'GlobalPtr' ('Ref') to it
+remote :: (Static (Serializable (GMVar a)), Static (Serializable a))
+       => MPI.Rank -> Closure (IO a) -> IO (MVar a)
+remote = remote' closureDict closureDict
 
--- | Static 4-tuples
-instance ( Static c1, Static c2, Static c3, Static c4
-         , Typeable c1, Typeable c2, Typeable c3, Typeable c4
-         , (c1, c2, c3, c4)) =>
-         Static (c1, c2, c3, c4) where
-  closureDict =
-    static tupleDict `cap`
-    closureDict `cap` closureDict `cap` closureDict `cap` closureDict
-    where tupleDict :: Dict d1 -> Dict d2 -> Dict d3 -> Dict d4
-                    -> Dict (d1, d2, d3, d4)
-          tupleDict Dict Dict Dict Dict = Dict
+remote' :: Closure (Dict (Serializable (GMVar a)))
+        -> Closure (Dict (Serializable a))
+        -> MPI.Rank
+        -> Closure (IO a)
+        -> IO (MVar a)
+remote' cd1 cd2 rank cl =
+  case unclosure cd2 of
+    Dict ->
+      do mvar <- newEmptyMVar
+         rptr <- newGlobalPtr mvar
+         let fun = closure (static execSend)
+             arg1 = cduplicate cd1
+             arg2 = cduplicate cd2
+         arg3 <- return (cpure cd1 rptr)
+         cl' <- return (fun `cap` arg1 `cap` arg2 `cap` arg3 `cap` cl)
+         rexec rank cl'
+         return mvar
 
-
-
--- | Static Binary tuples
-instance ( Static (Binary a), Static (Binary b)
-         , Typeable a, Typeable b
-         , Binary (a, b)) =>
-         Static (Binary (a, b)) where
-  closureDict = static pairDict `cap` closureDict `cap` closureDict
-    where pairDict :: Dict (Binary x) -> Dict (Binary y) -> Dict (Binary (x, y))
-          pairDict Dict Dict = Dict
-
--- | Static Typeable tuples
-instance ( Static (Typeable a), Static (Typeable b)
-         , Typeable a, Typeable b) =>
-         Static (Typeable (a, b)) where
-  closureDict = static pairDict `cap` closureDict `cap` closureDict
-    where pairDict ::
-            Dict (Typeable x) -> Dict (Typeable y) -> Dict (Typeable (x, y))
-          pairDict Dict Dict = Dict
-
-
-
--- | Static Statics
-instance Static c => Static (Static c) where
-  closureDict = closureDict
+execSend :: Closure (Dict (Serializable (GMVar a)))
+         -> Closure (Dict (Serializable a))
+         -> GMVar a
+         -> IO a
+         -> IO ()
+execSend cd1 cd2 gptr cl =
+  do res <- cl
+     rsend' cd1 cd2 gptr res
