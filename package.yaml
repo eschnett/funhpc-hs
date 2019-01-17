@@ -96,6 +96,7 @@ executables:
       - binary
       - distributed-closure
       - funhpc-hs
+      - hostname
       - mpi-hs
     ghc-options:
       - -rtsopts

@@ -5,9 +5,9 @@ module Control.Distributed.MPI.Server
   , withClosureDict
   , withClosureDict2
   , runServer
-  , rexec
   , lexec
   , lcall
+  , rexec
   , rcall
   , rcallCD
   , RVar
@@ -33,14 +33,19 @@ import Data.Distributed.GlobalPtr
 
 
 
+optimizeLocalCalls :: Bool
+optimizeLocalCalls = True
+
+
+
 type ClosureDict z = Closure (Dict z)
 
 withClosureDict :: ClosureDict z -> (z => a) -> a
-withClosureDict s x = case unclosure s of Dict -> x
+withClosureDict cd x = case unclosure cd of Dict -> x
 
-withClosureDict2 :: (ClosureDict z1, ClosureDict z2) -> ((z1, z2) => a) -> a
-withClosureDict2 (s1, s2) x =
-  case (unclosure s1, unclosure s2) of (Dict, Dict) -> x
+withClosureDict2 :: ClosureDict z1 -> ClosureDict z2 -> ((z1, z2) => a) -> a
+withClosureDict2 cd1 cd2 x =
+  case (unclosure cd1, unclosure cd2) of (Dict, Dict) -> x
 
 
 
@@ -51,6 +56,7 @@ runServer mainTask =
        do putStrLn ("*** Starting MPI server on " ++ show worldSize ++
                     " processes ***")
 
+     -- TODO: Shouldn't this be atomic? Can we use an 'MVar ()' instead?
      breq <- newIORef Nothing
      let signalDone = do req <- MPI.ibarrier worldComm
                          writeIORef breq (Just req)
@@ -61,9 +67,8 @@ runServer mainTask =
 
      _ <- forkIO rexecServer
 
-     _ <- forkIO
-       do when (worldRank == worldRoot) mainTask
-          signalDone
+     _ <- forkIO do when (worldRank == worldRoot) mainTask
+                    signalDone
 
      whileM_ (not <$> checkDone) yield
 
@@ -83,21 +88,6 @@ runServer mainTask =
 
 
 
-rexecTag :: MPI.Tag
-rexecTag = 1
-
-rexec :: MPI.Rank -> Closure (IO ()) -> IO ()
-rexec dest cl = MPI.send cl dest rexecTag worldComm
-
-rexecServer :: IO ()
-rexecServer =
-  forever
-  do (cl :: Closure (IO ())) <- MPI.recv_ MPI.anySource rexecTag worldComm
-     _ <- forkIO do unclosure cl
-     return ()
-
-
-
 lexec :: IO () -> IO ()
 lexec act =
   do _ <- forkIO act
@@ -109,6 +99,24 @@ lcall act =
      _ <- forkIO do x <- act
                     putMVar mvar x
      return mvar
+
+
+
+rexecTag :: MPI.Tag
+rexecTag = 1
+
+rexec :: MPI.Rank -> Closure (IO ()) -> IO ()
+rexec dest cl =
+  if optimizeLocalCalls && dest == worldRank
+  then lexec (unclosure cl)
+  else MPI.send cl dest rexecTag worldComm
+
+rexecServer :: IO ()
+rexecServer =
+  forever
+  do (cl :: Closure (IO ())) <- MPI.recv_ MPI.anySource rexecTag worldComm
+     _ <- forkIO do unclosure cl
+     return ()
 
 
 
@@ -125,10 +133,12 @@ rcallCD :: ClosureDict (Serializable a)
         -> ClosureDict (Serializable (RVar a))
         -> MPI.Rank -> Closure (IO a) -> IO (MVar a)
 rcallCD cd1 cd2 rank cl =
-  do rmvar <- newEmptyMVar
-     rptr <- newGlobalPtr rmvar
-     rexec rank (rcall2C cd1 cd2 rptr cl)
-     return rmvar
+  if optimizeLocalCalls && rank == worldRank
+  then lcall (unclosure cl)
+  else do rmvar <- newEmptyMVar
+          rptr <- newGlobalPtr rmvar
+          rexec rank (rcall2C cd1 cd2 rptr cl)
+          return rmvar
 
 rcall2CD :: ClosureDict (Serializable a)
          -> ClosureDict (Serializable (RVar a))

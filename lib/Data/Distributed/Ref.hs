@@ -1,4 +1,5 @@
 {-# LANGUAGE StaticPointers #-}
+{-# LANGUAGE UndecidableInstances #-}
 
 module Data.Distributed.Ref
  ( Object
@@ -17,6 +18,8 @@ import Control.Monad
 import Data.IORef
 import Foreign
 import Foreign.Concurrent as FC
+import GHC.Generics
+import System.IO.Unsafe
 import Type.Reflection
 
 import Control.Distributed.Closure
@@ -24,6 +27,7 @@ import Data.Binary
 
 import qualified Control.Distributed.MPI.Binary as MPI
 import Control.Distributed.MPI.Server
+import Control.Distributed.MPI.World
 import Data.Distributed.GlobalPtr
 
 
@@ -41,7 +45,8 @@ instance (Typeable a, Static (Typeable a)) => Static (Typeable (Object a)) where
 
 increfObject :: GlobalPtr (Object a) -> IO ()
 increfObject gptr =
-  do Just obj <- deRefGlobalPtr gptr
+  do mobj <- deRefGlobalPtr gptr
+     let Just obj = mobj
      atomicModifyIORef' (count obj) \cnt -> (cnt + 1, ())
 
 increfObjectC :: ClosureDict (Typeable a)
@@ -54,9 +59,10 @@ increfObjectC cd1 cd2 gptr =
 
 decrefObject :: GlobalPtr (Object a) -> IO ()
 decrefObject gptr =
-  do Just obj <- deRefGlobalPtr gptr
-     cnt <- atomicModifyIORef' (count obj) \cnt -> (cnt - 1, cnt - 1)
-     when (cnt == 0) do freeGlobalPtr gptr
+  do mobj <- deRefGlobalPtr gptr
+     let Just obj = mobj
+     newcnt <- atomicModifyIORef' (count obj) \cnt -> (cnt - 1, cnt - 1)
+     when (newcnt == 0) do freeGlobalPtr gptr
 
 decrefObjectC :: ClosureDict (Typeable a)
               -> ClosureDict (Serializable (GlobalPtr (Object a)))
@@ -82,7 +88,8 @@ newObjectC cd1 x =
 
 readObject :: GlobalPtr (Object a) -> IO a
 readObject gptr =
-  do Just obj <- deRefGlobalPtr gptr
+  do mobj <- deRefGlobalPtr gptr
+     let Just obj = mobj
      return (object obj)
 
 
@@ -92,6 +99,8 @@ readObject gptr =
 data Ref a = Ref { globalPtr :: GlobalPtr (Object a)
                  , finalizer :: ForeignPtr ()
                  }
+  deriving (Generic)
+
 instance Eq (Ref a) where
   Ref gptr1 _ == Ref gptr2 _ = gptr1 == gptr2
 
@@ -125,7 +134,8 @@ decrefCD :: ClosureDict (Typeable a)
          -> IO ()
 decrefCD cd1 cd2 ref =
   do let gptr = globalPtr ref
-     rexec (globalPtrRank gptr) (decrefObjectC cd1 cd2 gptr)
+     -- rexec (globalPtrRank gptr) (decrefObjectC cd1 cd2 gptr)
+     return ()
 
 
 
@@ -159,10 +169,34 @@ newRefCD cd1 cd2 x =
      ref <- refFromObjectCD cd1 cd2 gptr
      return ref
 
-fetchRef :: Ref a -> IO a
-fetchRef (Ref gptr _) =
-  -- TODO: Check rank
-  readObject gptr
+fetchRef :: ( Static (Serializable a)
+            , Static (Serializable (RVar a))
+            , Static (Serializable (GlobalPtr (Object a))))
+         => Ref a -> IO (MVar a)
+fetchRef = fetchRefCD closureDict closureDict closureDict
+
+fetchRefCD :: ClosureDict (Serializable a)
+           -> ClosureDict (Serializable (RVar a))
+           -> ClosureDict (Serializable (GlobalPtr (Object a)))
+           -> Ref a -> IO (MVar a)
+fetchRefCD cd1 cd2 cd3 ref =
+  do let gptr = globalPtr ref
+     rmvar <- rcallCD cd1 cd2 (globalPtrRank gptr) (fetchRef2C cd1 cd3 gptr)
+     touchForeignPtr (finalizer ref)
+     return rmvar
+
+fetchRef2 :: GlobalPtr (Object a) -> IO a
+fetchRef2 gptr = do mres <- deRefGlobalPtr gptr
+                    let Just res = mres
+                    return (object res)
+
+fetchRef2C :: ClosureDict (Serializable a)
+           -> ClosureDict (Serializable (GlobalPtr (Object a)))
+           -> GlobalPtr (Object a) -> Closure (IO a)
+fetchRef2C cd1 cd2 gptr =
+  withClosureDict cd1 $
+  closure (static fetchRef2)
+  `cap` cpure cd2 gptr
 
 
 
@@ -171,6 +205,7 @@ fetchRef (Ref gptr _) =
 newtype SerializedRef a = SerializedRef (GlobalPtr (Object a))
   deriving (Eq, Binary)
 
+{-# NOINLINE serializeRef #-}
 serializeRef :: ( Static (Typeable a)
                 , Static (Serializable ())
                 , Static (Typeable (MVar ()))
@@ -181,13 +216,26 @@ serializeRef ref =
      incref ref
      return (SerializedRef gptr)
 
+{-# NOINLINE deserializeRef #-}
 deserializeRef :: ( Static (Typeable a)
                   , Static (Serializable (GlobalPtr (Object a))))
                => SerializedRef a -> IO (Ref a)
 deserializeRef (SerializedRef gptr) =
   do ref <- refFromObject gptr
-     decref ref
+     -- Note: Don't decrease the reference count here. We are using
+     -- the serialize object, and we are creating a reference, which
+     -- is combined a neutral operation.
      return ref
+
+instance ( Static (Typeable a)
+         , Static (Serializable ())
+         , Static (Typeable (MVar ()))
+         , Static (Serializable (GlobalPtr (Object a)))) =>
+         Binary (Ref a) where
+  put ref = do let sref = unsafePerformIO (serializeRef ref)
+               put sref
+  get = do sref <- get
+           return (unsafePerformIO (deserializeRef sref))
 
 
 

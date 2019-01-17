@@ -1,5 +1,6 @@
 module Control.Distributed.MPI.World
   ( funHPCAssert
+  , assertIO
   , worldComm
   , worldRank
   , worldRoot
@@ -24,7 +25,6 @@ instance Exception FunHPCException
 funHPCAssert :: Bool -> String -> IO ()
 funHPCAssert cond msg = when (not cond) do throw (FunHPException msg)
 
--- TODO: export this
 assertIO :: Bool -> IO ()
 assertIO cond = assert cond return ()
 
