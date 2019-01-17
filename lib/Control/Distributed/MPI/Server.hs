@@ -1,12 +1,20 @@
 {-# LANGUAGE StaticPointers #-}
 
 module Control.Distributed.MPI.Server
-  ( runServer
+  ( ClosureDict
+  , withClosureDict
+  , withClosureDict2
+  , runServer
   , rexec
+  , lexec
+  , lcall
+  , rcall
+  , rcallCD
+  , RVar
   , rsend
+  , rsendCD
   , rfetch
-  , local
-  , remote
+  , rfetchCD
   ) where
 
 import Control.Concurrent
@@ -22,6 +30,17 @@ import Control.Distributed.Closure
 import Control.Distributed.MPI.World
 import qualified Control.Distributed.MPI.Binary as MPI
 import Data.Distributed.GlobalPtr
+
+
+
+type ClosureDict z = Closure (Dict z)
+
+withClosureDict :: ClosureDict z -> (z => a) -> a
+withClosureDict s x = case unclosure s of Dict -> x
+
+withClosureDict2 :: (ClosureDict z1, ClosureDict z2) -> ((z1, z2) => a) -> a
+withClosureDict2 (s1, s2) x =
+  case (unclosure s1, unclosure s2) of (Dict, Dict) -> x
 
 
 
@@ -79,107 +98,120 @@ rexecServer =
 
 
 
-type GMVar a = GlobalPtr (MVar a)
+lexec :: IO () -> IO ()
+lexec act =
+  do _ <- forkIO act
+     return ()
 
-
-
-rsend :: (Static (Serializable (GMVar a)), Static (Serializable a))
-      => GMVar a -> a -> IO ()
-rsend = rsend' closureDict closureDict
-
-rsend' :: Closure (Dict (Serializable (GMVar a)))
-       -> Closure (Dict (Serializable a))
-       -> GMVar a
-       -> a
-       -> IO ()
-rsend' cd1 cd2 gptr val =
-  case unclosure cd2 of
-    Dict ->
-      let fun = closure (static putGptr)
-          arg1 = cpure cd1 gptr
-          arg2 = cpure cd2 val
-      in rexec (globalPtrRank gptr) $ fun `cap` arg1 `cap` arg2
-
-putGptr :: GMVar a -> a -> IO ()
-putGptr gptr val =
-  do Just mvar <- deRefGlobalPtr gptr
-     putMVar mvar val
-
-
-
-rfetch :: (Static (Serializable (GMVar a)), Static (Serializable a))
-       => GMVar a -> IO a
-rfetch = rfetch' closureDict closureDict
-
-rfetch' :: Closure (Dict (Serializable (GMVar a)))
-        -> Closure (Dict (Serializable a))
-        -> GMVar a
-        -> IO a
-rfetch' cd1 cd2 gptr =
-  case unclosure cd2 of
-    Dict ->
-      do mvar <- newEmptyMVar
-         rptr <- newGlobalPtr mvar
-         let fun = closure (static readGptr)
-             arg1 = cduplicate cd1
-             arg2 = cduplicate cd2
-         arg3 <- return (cpure cd1 rptr)
-         let arg4 = cpure cd1 gptr
-         cl <- return (fun `cap` arg1 `cap` arg2 `cap` arg3 `cap` arg4)
-         rexec (globalPtrRank gptr) cl
-         res <- takeMVar mvar
-         freeGlobalPtr rptr
-         return res
-
-readGptr :: Closure (Dict (Serializable (GMVar a)))
-         -> Closure (Dict (Serializable a))
-         -> GMVar a
-         -> GMVar a
-         -> IO ()
-readGptr cd1 cd2 rptr gptr =
-  do Just mvar <- deRefGlobalPtr gptr
-     val <- readMVar mvar
-     rsend' cd1 cd2 rptr val
-
-
-
-local :: (a -> IO b) -> a -> IO (MVar b)
-local fun arg =
+lcall :: IO a -> IO (MVar a)
+lcall act =
   do mvar <- newEmptyMVar
-     _ <- forkIO do res <- fun arg
-                    putMVar mvar res
+     _ <- forkIO do x <- act
+                    putMVar mvar x
      return mvar
 
 
 
--- TODO: keep the value on the remote system, return a 'GlobalPtr' ('Ref') to it
-remote :: (Static (Serializable (GMVar a)), Static (Serializable a))
-       => MPI.Rank -> Closure (IO a) -> IO (MVar a)
-remote = remote' closureDict closureDict
+type RVar a = GlobalPtr (MVar a)
 
-remote' :: Closure (Dict (Serializable (GMVar a)))
-        -> Closure (Dict (Serializable a))
-        -> MPI.Rank
-        -> Closure (IO a)
-        -> IO (MVar a)
-remote' cd1 cd2 rank cl =
-  case unclosure cd2 of
-    Dict ->
-      do mvar <- newEmptyMVar
-         rptr <- newGlobalPtr mvar
-         let fun = closure (static execSend)
-             arg1 = cduplicate cd1
-             arg2 = cduplicate cd2
-         arg3 <- return (cpure cd1 rptr)
-         cl' <- return (fun `cap` arg1 `cap` arg2 `cap` arg3 `cap` cl)
-         rexec rank cl'
-         return mvar
 
-execSend :: Closure (Dict (Serializable (GMVar a)))
-         -> Closure (Dict (Serializable a))
-         -> GMVar a
-         -> IO a
-         -> IO ()
-execSend cd1 cd2 gptr cl =
-  do res <- cl
-     rsend' cd1 cd2 gptr res
+
+rcall :: ( Static (Serializable a)
+         , Static (Serializable (RVar a)))
+      => MPI.Rank -> Closure (IO a) -> IO (MVar a)
+rcall = rcallCD closureDict closureDict
+
+rcallCD :: ClosureDict (Serializable a)
+        -> ClosureDict (Serializable (RVar a))
+        -> MPI.Rank -> Closure (IO a) -> IO (MVar a)
+rcallCD cd1 cd2 rank cl =
+  do rmvar <- newEmptyMVar
+     rptr <- newGlobalPtr rmvar
+     rexec rank (rcall2C cd1 cd2 rptr cl)
+     return rmvar
+
+rcall2CD :: ClosureDict (Serializable a)
+         -> ClosureDict (Serializable (RVar a))
+         -> RVar a -> IO a -> IO ()
+rcall2CD cd1 cd2 rptr act =
+  do res <- act
+     rexec (globalPtrRank rptr) (rcall3C cd1 cd2 rptr res)
+
+rcall2C :: ClosureDict (Serializable a)
+        -> ClosureDict (Serializable (RVar a))
+        -> RVar a -> Closure (IO a) -> Closure (IO ())
+rcall2C cd1 cd2 rptr cl =
+  withClosureDict cd1 $
+  closure (static rcall2CD)
+  `cap` cduplicate cd1
+  `cap` cduplicate cd2
+  `cap` cpure cd2 rptr
+  `cap` cl
+
+rcall3 :: RVar a -> a -> IO ()
+rcall3 rptr res =
+  do Just mvar <- deRefGlobalPtr rptr
+     putMVar mvar res
+
+rcall3C :: ClosureDict (Serializable a)
+        -> ClosureDict (Serializable (RVar a))
+        -> RVar a -> a -> Closure (IO ())
+rcall3C cd1 cd2 rptr res =
+  withClosureDict cd1 $
+  closure (static rcall3)
+  `cap` cpure cd2 rptr
+  `cap` cpure cd1 res
+
+
+
+rsend :: ( Static (Serializable a)
+         , Static (Serializable (RVar a))) 
+      => RVar a -> a -> IO ()
+rsend = rsendCD closureDict closureDict
+
+rsendCD :: ClosureDict (Serializable a)
+        -> ClosureDict (Serializable (RVar a))
+        -> RVar a -> a -> IO ()
+rsendCD cd1 cd2 gptr val =
+  rexec (globalPtrRank gptr) (rsend2C cd1 cd2  gptr val)
+
+rsend2 :: RVar a -> a -> IO ()
+rsend2 gptr val =
+  do Just mvar <- deRefGlobalPtr gptr
+     putMVar mvar val
+
+rsend2C :: ClosureDict (Serializable a)
+        -> ClosureDict (Serializable (RVar a))
+        -> RVar a -> a -> Closure (IO ())
+rsend2C cd1 cd2 gptr val =
+  withDict (unclosure cd1) $
+  closure (static rsend2)
+  `cap` cpure cd2 gptr
+  `cap` cpure cd1 val
+
+
+
+rfetch :: ( Static (Serializable a)
+          , Static (Serializable (RVar a)))
+       => RVar a -> IO (MVar a)
+rfetch = rfetchCD closureDict closureDict
+
+rfetchCD :: ClosureDict (Serializable a)
+         -> ClosureDict (Serializable (RVar a))
+         -> RVar a -> IO (MVar a)
+rfetchCD cd1 cd2 gptr =
+  rcallCD cd1 cd2 (globalPtrRank gptr) (rfetch2C cd1 cd2 gptr)
+
+rfetch2 :: RVar a -> IO a
+rfetch2 gptr =
+  do Just mvar <- deRefGlobalPtr gptr
+     val <- readMVar mvar
+     return val
+
+rfetch2C :: ClosureDict (Serializable a)
+         -> ClosureDict (Serializable (RVar a))
+         -> RVar a -> Closure (IO a)
+rfetch2C cd1 cd2 gptr =
+  withClosureDict cd1 $
+  closure (static rfetch2)
+  `cap` cpure cd2 gptr

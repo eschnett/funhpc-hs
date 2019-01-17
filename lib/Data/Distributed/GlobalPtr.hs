@@ -49,12 +49,6 @@ instance (Typeable a, Static (Typeable a), Binary (GlobalPtr a)) =>
     where serdict :: Dict (Typeable b) -> Dict (Binary (GlobalPtr b))
           serdict Dict = Dict
 
--- instance (Typeable a, Static (Typeable a), Serializable (GlobalPtr a)) =>
---          Static (Serializable (GlobalPtr a)) where
---   closureDict = closure (static serdict) `cap` closureDict
---     where serdict :: Dict (Typeable b) -> Dict (Serializable (GlobalPtr b))
---           serdict Dict = Dict
-
 newGlobalPtr :: a -> IO (GlobalPtr a)
 newGlobalPtr x =
   do ptr <- newStablePtr x
