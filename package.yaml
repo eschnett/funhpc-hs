@@ -17,6 +17,7 @@ extra-source-files:
 ghc-options:
   - -foptimal-applicative-do
   - -funbox-strict-fields
+  - -fprint-potential-instances #TODO
   - -Wall
   - -Wcompat
   - -Wincomplete-record-updates

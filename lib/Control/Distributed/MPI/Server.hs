@@ -1,10 +1,7 @@
 {-# LANGUAGE StaticPointers #-}
 
 module Control.Distributed.MPI.Server
-  ( ClosureDict
-  , withClosureDict
-  , withClosureDict2
-  , runServer
+  ( runServer
   , lexec
   , lcall
   , rexec
@@ -20,12 +17,15 @@ module Control.Distributed.MPI.Server
 import Control.Concurrent
 import Control.Monad
 import Control.Monad.Loops
-import Data.Constraint
+import Data.Binary
 import Data.IORef
 import Data.Maybe
 import System.IO
+import Type.Reflection
 
 import Control.Distributed.Closure
+import Control.Distributed.Closure.Instances()
+import Control.Distributed.Closure.StaticT
 
 import Control.Distributed.MPI.World
 import qualified Control.Distributed.MPI.Binary as MPI
@@ -35,17 +35,6 @@ import Data.Distributed.GlobalPtr
 
 optimizeLocalCalls :: Bool
 optimizeLocalCalls = True
-
-
-
-type ClosureDict z = Closure (Dict z)
-
-withClosureDict :: ClosureDict z -> (z => a) -> a
-withClosureDict cd x = case unclosure cd of Dict -> x
-
-withClosureDict2 :: ClosureDict z1 -> ClosureDict z2 -> ((z1, z2) => a) -> a
-withClosureDict2 cd1 cd2 x =
-  case (unclosure cd1, unclosure cd2) of (Dict, Dict) -> x
 
 
 
@@ -124,38 +113,38 @@ type RVar a = GlobalPtr (MVar a)
 
 
 
-rcall :: ( Static (Serializable a)
-         , Static (Serializable (RVar a)))
+rcall :: Static (Serializable a)
       => MPI.Rank -> Closure (IO a) -> IO (MVar a)
-rcall = rcallCD closureDict closureDict
+rcall = rcallCD closureDict
 
 rcallCD :: ClosureDict (Serializable a)
-        -> ClosureDict (Serializable (RVar a))
         -> MPI.Rank -> Closure (IO a) -> IO (MVar a)
-rcallCD cd1 cd2 rank cl =
+rcallCD cd rank cl =
   if optimizeLocalCalls && rank == worldRank
   then lcall (unclosure cl)
   else do rmvar <- newEmptyMVar
           rptr <- newGlobalPtr rmvar
-          rexec rank (rcall2C cd1 cd2 rptr cl)
+          rexec rank (rcall2C cd rptr cl)
           return rmvar
 
 rcall2CD :: ClosureDict (Serializable a)
-         -> ClosureDict (Serializable (RVar a))
          -> RVar a -> IO a -> IO ()
-rcall2CD cd1 cd2 rptr act =
+rcall2CD cd rptr act =
   do res <- act
-     rexec (globalPtrRank rptr) (rcall3C cd1 cd2 rptr res)
+     rexec (globalPtrRank rptr) (rcall3C cd rptr res)
 
-rcall2C :: ClosureDict (Serializable a)
-        -> ClosureDict (Serializable (RVar a))
+rcall2C :: forall a. ClosureDict (Serializable a)
         -> RVar a -> Closure (IO a) -> Closure (IO ())
-rcall2C cd1 cd2 rptr cl =
-  withClosureDict cd1 $
-  closure (static rcall2CD)
-  `cap` cduplicate cd1
-  `cap` cduplicate cd2
-  `cap` cpure cd2 rptr
+rcall2C cd rptr cl =
+  withClosureDict cd
+  let cd2 = getTypeable cd
+      cd3 = closureDictT cd2 :: ClosureDict (Typeable (MVar a))
+      cd4 = closureDictT cd3 :: ClosureDict (Binary (GlobalPtr (MVar a)))
+      cd5 = closureDictT cd3 :: ClosureDict (Typeable (GlobalPtr (MVar a)))
+      cd6 = combineClosureDict cd4 cd5
+  in closure (static rcall2CD)
+  `cap` cduplicate cd
+  `cap` cpure cd6 rptr
   `cap` cl
 
 rcall3 :: RVar a -> a -> IO ()
@@ -163,54 +152,58 @@ rcall3 rptr res =
   do Just mvar <- deRefGlobalPtr rptr
      putMVar mvar res
 
-rcall3C :: ClosureDict (Serializable a)
-        -> ClosureDict (Serializable (RVar a))
+rcall3C :: forall a. ClosureDict (Serializable a)
         -> RVar a -> a -> Closure (IO ())
-rcall3C cd1 cd2 rptr res =
-  withClosureDict cd1 $
-  closure (static rcall3)
-  `cap` cpure cd2 rptr
-  `cap` cpure cd1 res
+rcall3C cd rptr res =
+  withClosureDict cd
+  let cd2 = getTypeable cd
+      cd3 = closureDictT cd2 :: ClosureDict (Typeable (MVar a))
+      cd4 = closureDictT cd3 :: ClosureDict (Binary (GlobalPtr (MVar a)))
+      cd5 = closureDictT cd3 :: ClosureDict (Typeable (GlobalPtr (MVar a)))
+      cd6 = combineClosureDict cd4 cd5
+  in closure (static rcall3)
+     `cap` cpure cd6 rptr
+     `cap` cpure cd res
 
 
 
-rsend :: ( Static (Serializable a)
-         , Static (Serializable (RVar a))) 
+rsend :: Static (Serializable a)
       => RVar a -> a -> IO ()
-rsend = rsendCD closureDict closureDict
+rsend = rsendCD closureDict
 
 rsendCD :: ClosureDict (Serializable a)
-        -> ClosureDict (Serializable (RVar a))
         -> RVar a -> a -> IO ()
-rsendCD cd1 cd2 gptr val =
-  rexec (globalPtrRank gptr) (rsend2C cd1 cd2  gptr val)
+rsendCD cd gptr val =
+  rexec (globalPtrRank gptr) (rsend2C cd gptr val)
 
 rsend2 :: RVar a -> a -> IO ()
 rsend2 gptr val =
   do Just mvar <- deRefGlobalPtr gptr
      putMVar mvar val
 
-rsend2C :: ClosureDict (Serializable a)
-        -> ClosureDict (Serializable (RVar a))
+rsend2C :: forall a. ClosureDict (Serializable a)
         -> RVar a -> a -> Closure (IO ())
-rsend2C cd1 cd2 gptr val =
-  withDict (unclosure cd1) $
-  closure (static rsend2)
-  `cap` cpure cd2 gptr
-  `cap` cpure cd1 val
+rsend2C cd gptr val =
+  withClosureDict cd
+  let cd2 = getTypeable cd
+      cd3 = closureDictT cd2 :: ClosureDict (Typeable (MVar a))
+      cd4 = closureDictT cd3 :: ClosureDict (Binary (GlobalPtr (MVar a)))
+      cd5 = closureDictT cd3 :: ClosureDict (Typeable (GlobalPtr (MVar a)))
+      cd6 = combineClosureDict cd4 cd5
+  in closure (static rsend2)
+     `cap` cpure cd6 gptr
+     `cap` cpure cd val
 
 
 
-rfetch :: ( Static (Serializable a)
-          , Static (Serializable (RVar a)))
+rfetch :: Static (Serializable a)
        => RVar a -> IO (MVar a)
-rfetch = rfetchCD closureDict closureDict
+rfetch = rfetchCD closureDict
 
 rfetchCD :: ClosureDict (Serializable a)
-         -> ClosureDict (Serializable (RVar a))
          -> RVar a -> IO (MVar a)
-rfetchCD cd1 cd2 gptr =
-  rcallCD cd1 cd2 (globalPtrRank gptr) (rfetch2C cd1 cd2 gptr)
+rfetchCD cd gptr =
+  rcallCD cd (globalPtrRank gptr) (rfetch2C cd gptr)
 
 rfetch2 :: RVar a -> IO a
 rfetch2 gptr =
@@ -218,10 +211,14 @@ rfetch2 gptr =
      val <- readMVar mvar
      return val
 
-rfetch2C :: ClosureDict (Serializable a)
-         -> ClosureDict (Serializable (RVar a))
+rfetch2C :: forall a. ClosureDict (Serializable a)
          -> RVar a -> Closure (IO a)
-rfetch2C cd1 cd2 gptr =
-  withClosureDict cd1 $
-  closure (static rfetch2)
-  `cap` cpure cd2 gptr
+rfetch2C cd gptr =
+  withClosureDict cd
+  let cd2 = getTypeable cd
+      cd3 = closureDictT cd2 :: ClosureDict (Typeable (MVar a))
+      cd4 = closureDictT cd3 :: ClosureDict (Binary (GlobalPtr (MVar a)))
+      cd5 = closureDictT cd3 :: ClosureDict (Typeable (GlobalPtr (MVar a)))
+      cd6 = combineClosureDict cd4 cd5
+  in closure (static rfetch2)
+     `cap` cpure cd6 gptr

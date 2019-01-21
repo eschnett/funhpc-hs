@@ -1,12 +1,13 @@
 {-# LANGUAGE StaticPointers #-}
+{-# LANGUAGE UndecidableInstances #-}
 
 import Control.Concurrent
 import Control.Monad
-import Data.Binary
 import Network.HostName
-import Type.Reflection
+import System.Mem
 
 import Control.Distributed.Closure
+import Control.Distributed.Closure.Instances()
 
 import qualified Control.Distributed.MPI as MPI
 import Control.Distributed.MPI.Server
@@ -22,7 +23,10 @@ main =
      runHostNames
      runTreeLCall
      runTreeRCall
+     runSimpleRef
+     runSimpleLocal
      runTreeLocal
+     runSimpleRemote
      runTreeRemote
 
 
@@ -116,9 +120,33 @@ treeRCallC r n =
 
 
 
+runSimpleRef :: IO ()
+runSimpleRef =
+  do putStrLn "Starting simple ref"
+     let n = 42 :: Int
+     rn <- newRef n
+     performGC
+     n' <- takeMVar =<< fetchRef rn
+     performGC
+     putStrLn $ "Result: " ++ show n' ++ " = " ++ show n
+
+
+
+runSimpleLocal :: IO ()
+runSimpleLocal =
+  do putStrLn "Starting simple local"
+     let n = 42 :: Int
+     rn <- local (return n)
+     performGC
+     n' <- takeMVar =<< fetchRef =<< takeMVar rn
+     performGC
+     putStrLn $ "Result: " ++ show n' ++ " = " ++ show n
+
+
+
 runTreeLocal :: IO ()
 runTreeLocal =
-  do let n = 100000
+  do let n = 10000
      putStrLn $ "Starting local tree with " ++ show n ++ " leaves..."
      n' <- treeLocal n
      putStrLn $ "Result: " ++ show n'
@@ -128,6 +156,7 @@ treeLocal n =
   do let n' = n - 1
      let n1 = n' `div` 2
      let n2 = n' - n1
+     performGC
      ftr1 <- if n1 > 0
              then local (treeLocal n1)
              else newMVar =<< newRef 0
@@ -137,6 +166,18 @@ treeLocal n =
      res1 <- takeMVar =<< fetchRef =<< takeMVar ftr1
      res2 <- takeMVar =<< fetchRef =<< takeMVar ftr2
      return $ 1 + res1 + res2
+
+
+
+runSimpleRemote :: IO ()
+runSimpleRemote =
+  do putStrLn "Starting simple remote"
+     let n = 42 :: Int
+     rn <- remote worldRank $ closure (static (return n))
+     performGC
+     n' <- takeMVar =<< fetchRef =<< takeMVar rn
+     performGC
+     putStrLn $ "Result: " ++ show n' ++ " = " ++ show n
 
 
 
@@ -154,14 +195,19 @@ treeRemote r n =
      let n2 = n' - n1
      let r1 = 2 * r + 1
      let r2 = 2 * r + 2
+     performGC
      ftr1 <- if n1 > 0
              then remote (MPI.toRank r1 `mod` worldSize) (treeRemoteC r1 n1)
              else newMVar =<< newRef 0
+     performGC
      ftr2 <- if n2 > 0
              then remote (MPI.toRank r2 `mod` worldSize) (treeRemoteC r2 n2)
              else newMVar =<< newRef 0
+     performGC
      res1 <- takeMVar =<< fetchRef =<< takeMVar ftr1
+     performGC
      res2 <- takeMVar =<< fetchRef =<< takeMVar ftr2
+     performGC
      return $ 1 + res1 + res2
 
 treeRemoteC :: Int -> Int -> Closure (IO Int)
@@ -169,39 +215,3 @@ treeRemoteC r n =
   closure (static treeRemote)
   `cap` cpure closureDict r
   `cap` cpure closureDict n
-
-
-
---------------------------------------------------------------------------------
-
--- instance (Typeable a, Binary a) => Static (Binary a) where
-
-instance Static (Typeable ()) where
-  closureDict = closure (static Dict)
-instance Static (Binary ()) where
-  closureDict = closure (static Dict)
-
-instance Static (Binary Int) where
-  closureDict = closure (static Dict)
-instance Static (Typeable Int) where
-  closureDict = closure (static Dict)
-
-instance Static (Binary String) where
-  closureDict = closure (static Dict)
-instance Static (Typeable String) where
-  closureDict = closure (static Dict)
-
-instance Static (Typeable (MVar ())) where
-  closureDict = closure (static Dict)
-instance Static (Typeable (MVar Int)) where
-  closureDict = closure (static Dict)
-instance Static (Typeable (MVar String)) where
-  closureDict = closure (static Dict)
-
-instance Static (Binary (Ref Int)) where
-  closureDict = closure (static Dict)
-instance Static (Typeable (Ref Int)) where
-  closureDict = closure (static Dict)
-
-instance Static (Typeable (MVar (Ref Int))) where
-  closureDict = closure (static Dict)

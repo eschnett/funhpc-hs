@@ -16,6 +16,7 @@ import GHC.Generics
 import Type.Reflection
 
 import Control.Distributed.Closure
+import Control.Distributed.Closure.StaticT
 import Data.Binary
 
 import qualified Control.Distributed.MPI.Binary as MPI
@@ -37,17 +38,15 @@ instance Typeable a => Binary (GlobalPtr a) where
        ptr <- (castPtrToStablePtr . wordPtrToPtr . coerce) <$> get @Word
        return (GlobalPtr rank ptr)
 
-instance (Typeable a, Static (Typeable a), Typeable (GlobalPtr a)) =>
-         Static (Typeable (GlobalPtr a)) where
-  closureDict = closure (static serdict) `cap` closureDict
-    where serdict :: Dict (Typeable b) -> Dict (Typeable (GlobalPtr b))
-          serdict Dict = Dict
+instance StaticT (Typeable a) (Binary (GlobalPtr a)) where
+  closureDictT cd = case unclosure cd of Dict -> closure (static dict) `cap` cd
+    where dict :: Dict (Typeable b) -> Dict (Binary (GlobalPtr b))
+          dict Dict = Dict
 
-instance (Typeable a, Static (Typeable a), Binary (GlobalPtr a)) =>
-         Static (Binary (GlobalPtr a)) where
-  closureDict = closure (static serdict) `cap` closureDict
-    where serdict :: Dict (Typeable b) -> Dict (Binary (GlobalPtr b))
-          serdict Dict = Dict
+instance StaticT (Typeable a) (Typeable (GlobalPtr a)) where
+  closureDictT cd = case unclosure cd of Dict -> closure (static dict) `cap` cd
+    where dict :: Dict (Typeable b) -> Dict (Typeable (GlobalPtr b))
+          dict Dict = Dict
 
 newGlobalPtr :: a -> IO (GlobalPtr a)
 newGlobalPtr x =

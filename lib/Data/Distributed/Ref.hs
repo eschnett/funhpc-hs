@@ -23,6 +23,8 @@ import System.IO.Unsafe
 import Type.Reflection
 
 import Control.Distributed.Closure
+import Control.Distributed.Closure.Instances()
+import Control.Distributed.Closure.StaticT
 import Data.Binary
 
 import qualified Control.Distributed.MPI.Binary as MPI
@@ -38,261 +40,249 @@ data Object a = Object { count :: IORef Word
                        , object :: a
                        }
 
-instance (Typeable a, Static (Typeable a)) => Static (Typeable (Object a)) where
-  closureDict = closure (static serdict) `cap` closureDict
-    where serdict :: Dict (Typeable b) -> Dict (Typeable (Object b))
-          serdict Dict = Dict
+instance StaticT (Typeable a) (Typeable (Object a)) where
+  closureDictT cd = withClosureDict cd $ closure (static \Dict -> Dict) `cap` cd
 
 increfObject :: GlobalPtr (Object a) -> IO ()
 increfObject gptr =
   do mobj <- deRefGlobalPtr gptr
      let Just obj = mobj
-     atomicModifyIORef' (count obj) \cnt -> (cnt + 1, ())
+     newcnt <- atomicModifyIORef' (count obj) \cnt -> (cnt + 1, cnt + 1)
+     -- putStrLn $ "incref newcnt=" ++ show newcnt
+     return ()
 
-increfObjectC :: ClosureDict (Typeable a)
-              -> ClosureDict (Serializable (GlobalPtr (Object a)))
+increfObjectC :: forall a. ClosureDict (Typeable a)
               -> GlobalPtr (Object a) -> Closure (IO ())
-increfObjectC cd1 cd2 gptr =
-  withClosureDict cd1 $
-  closure (static increfObject)
-  `cap` cpure cd2 gptr
+increfObjectC cd gptr =
+  withClosureDict cd
+  let cd2 = closureDictT cd :: ClosureDict (Typeable (Object a))
+      cd3 = closureDictT cd2 :: ClosureDict (Binary (GlobalPtr (Object a)))
+      cd4 = closureDictT cd2 :: ClosureDict (Typeable (GlobalPtr (Object a)))
+      cd5 = combineClosureDict cd3 cd4
+  in closure (static increfObject)
+     `cap` cpure cd5 gptr
 
 decrefObject :: GlobalPtr (Object a) -> IO ()
 decrefObject gptr =
   do mobj <- deRefGlobalPtr gptr
      let Just obj = mobj
      newcnt <- atomicModifyIORef' (count obj) \cnt -> (cnt - 1, cnt - 1)
+     -- putStrLn $ "decref newcnt=" ++ show newcnt
      when (newcnt == 0) do freeGlobalPtr gptr
+     return ()
 
-decrefObjectC :: ClosureDict (Typeable a)
-              -> ClosureDict (Serializable (GlobalPtr (Object a)))
+decrefObjectC :: forall a. ClosureDict (Typeable a)
               -> GlobalPtr (Object a) -> Closure (IO ())
-decrefObjectC cd1 cd2 gptr =
-  withClosureDict cd1 $
-  closure (static decrefObject)
-  `cap` cpure cd2 gptr
+decrefObjectC cd gptr =
+  withClosureDict cd
+  let cd2 = closureDictT cd :: ClosureDict (Typeable (Object a))
+      cd3 = closureDictT cd2 :: ClosureDict (Binary (GlobalPtr (Object a)))
+      cd4 = closureDictT cd2 :: ClosureDict (Typeable (GlobalPtr (Object a)))
+      cd5 = combineClosureDict cd3 cd4
+  in closure (static decrefObject)
+     `cap` cpure cd5 gptr
 
 newObject :: a -> IO (GlobalPtr (Object a))
 newObject x =
   do cnt <- newIORef 1 
      obj <- return (Object cnt x)
+     -- putStrLn "newobj cnt=1"
      gptr <- newGlobalPtr obj
      return gptr
   
 newObjectC :: ClosureDict (Serializable a)
            -> a -> Closure (IO (GlobalPtr (Object a)))
-newObjectC cd1 x =
-  withClosureDict cd1 $
+newObjectC cd x =
+  withClosureDict cd $
   closure (static newObject)
-  `cap` cpure cd1 x
-
-readObject :: GlobalPtr (Object a) -> IO a
-readObject gptr =
-  do mobj <- deRefGlobalPtr gptr
-     let Just obj = mobj
-     return (object obj)
+  `cap` cpure cd x
 
 
 
 --------------------------------------------------------------------------------
 
-data Ref a = Ref { globalPtr :: GlobalPtr (Object a)
+data Ref a = Ref { typeableDict :: ClosureDict (Typeable a)
+                 , globalPtr :: GlobalPtr (Object a)
                  , finalizer :: ForeignPtr ()
                  }
   deriving (Generic)
 
 instance Eq (Ref a) where
-  Ref gptr1 _ == Ref gptr2 _ = gptr1 == gptr2
+  ref1 == ref2 = globalPtr ref1 == globalPtr ref2
 
-incref :: ( Static (Typeable a)
-          , Static (Serializable (GlobalPtr (MVar ())))
-          , Static (Serializable ())
-          , Static (Serializable (GlobalPtr (Object a))))
-       => Ref a -> IO ()
-incref = increfCD closureDict closureDict closureDict closureDict
-
-increfCD :: ClosureDict (Typeable a)
-         -> ClosureDict (Serializable ())
-         -> ClosureDict (Serializable (GlobalPtr (MVar ())))
-         -> ClosureDict (Serializable (GlobalPtr (Object a)))
-         -> Ref a -> IO ()
-increfCD cd1 cd2 cd3 cd4 ref =
+incref :: Ref a -> IO ()
+incref ref =
   lexec do let gptr = globalPtr ref
-           mvar <- rcallCD cd2 cd3 (globalPtrRank gptr)
-                   (increfObjectC cd1 cd4 gptr)
+           mvar <- rcallCD closureDict (globalPtrRank gptr)
+                   (increfObjectC (typeableDict ref) gptr)
            takeMVar mvar
            touchForeignPtr (finalizer ref)
 
-decref :: ( Static (Typeable a)
-          , Static (Serializable (GlobalPtr (Object a))))
-       => Ref a -> IO ()
-decref ref = decrefCD closureDict closureDict ref
-
-decrefCD :: ClosureDict (Typeable a)
-         -> ClosureDict (Serializable (GlobalPtr (Object a)))
-         -> Ref a
-         -> IO ()
-decrefCD cd1 cd2 ref =
+decref :: Ref a -> IO ()
+decref ref =
   do let gptr = globalPtr ref
-     -- rexec (globalPtrRank gptr) (decrefObjectC cd1 cd2 gptr)
-     return ()
+     rexec (globalPtrRank gptr) (decrefObjectC (typeableDict ref) gptr)
+
+decref' :: ClosureDict (Typeable a) -> GlobalPtr (Object a) -> IO ()
+decref' dict gptr =
+  rexec (globalPtrRank gptr) (decrefObjectC dict gptr)
 
 
 
-refFromObject :: ( Static (Typeable a)
-                 , Static (Serializable (GlobalPtr (Object a))))
+refFromObject :: Static (Typeable a)
               => GlobalPtr (Object a) -> IO (Ref a)
-refFromObject = refFromObjectCD closureDict closureDict
+refFromObject = refFromObjectCD closureDict
 
 refFromObjectCD :: ClosureDict (Typeable a)
-                -> ClosureDict (Serializable (GlobalPtr (Object a)))
                 -> GlobalPtr (Object a) -> IO (Ref a)
-refFromObjectCD cd1 cd2 gptr =
-  do ptr <- malloc
-     fptr <- newForeignPtr_ ptr
-     let ref = Ref gptr fptr
-     let fin = do decrefCD cd1 cd2 ref
-                  free ptr
+refFromObjectCD dict gptr =
+  do fptr <- mallocForeignPtr
+     let ref = Ref dict gptr fptr
+     let fin = decref' dict gptr
      FC.addForeignPtrFinalizer fptr fin
      return ref
 
-newRef :: ( Static (Typeable a)
-          , Static (Serializable (GlobalPtr (Object a))))
+newRef :: Static (Typeable a)
        => a -> IO (Ref a)
-newRef = newRefCD closureDict closureDict
+newRef = newRefCD closureDict
 
 newRefCD :: ClosureDict (Typeable a)
-         -> ClosureDict (Serializable (GlobalPtr (Object a)))
          -> a -> IO (Ref a)
-newRefCD cd1 cd2 x =
+newRefCD dict x =
   do gptr <- newObject x
-     ref <- refFromObjectCD cd1 cd2 gptr
+     ref <- refFromObjectCD dict gptr
      return ref
 
-fetchRef :: ( Static (Serializable a)
-            , Static (Serializable (RVar a))
-            , Static (Serializable (GlobalPtr (Object a))))
+fetchRef :: Static (Serializable a)
          => Ref a -> IO (MVar a)
-fetchRef = fetchRefCD closureDict closureDict closureDict
+fetchRef = fetchRefCD closureDict
 
 fetchRefCD :: ClosureDict (Serializable a)
-           -> ClosureDict (Serializable (RVar a))
-           -> ClosureDict (Serializable (GlobalPtr (Object a)))
            -> Ref a -> IO (MVar a)
-fetchRefCD cd1 cd2 cd3 ref =
+fetchRefCD cd ref =
   do let gptr = globalPtr ref
-     rmvar <- rcallCD cd1 cd2 (globalPtrRank gptr) (fetchRef2C cd1 cd3 gptr)
-     touchForeignPtr (finalizer ref)
+     rmvar <- rcallCD cd (globalPtrRank gptr) (fetchRef2C cd gptr)
+     -- Concurrent execution means that the reference might go away
+     -- too early. We need to touch the finalizer after the global
+     -- pointer has been accessed. To ensure this, we wait until the
+     -- result has been sent back.
+     _ <- forkIO do _ <- readMVar rmvar
+                    touchForeignPtr (finalizer ref)
      return rmvar
 
 fetchRef2 :: GlobalPtr (Object a) -> IO a
-fetchRef2 gptr = do mres <- deRefGlobalPtr gptr
-                    let Just res = mres
-                    return (object res)
+fetchRef2 gptr =
+  do mres <- deRefGlobalPtr gptr
+     let Just res = mres
+     return (object res)
 
-fetchRef2C :: ClosureDict (Serializable a)
-           -> ClosureDict (Serializable (GlobalPtr (Object a)))
+fetchRef2C :: forall a. ClosureDict (Serializable a)
            -> GlobalPtr (Object a) -> Closure (IO a)
-fetchRef2C cd1 cd2 gptr =
-  withClosureDict cd1 $
-  closure (static fetchRef2)
-  `cap` cpure cd2 gptr
+fetchRef2C cd gptr =
+  withClosureDict cd
+  let cd2 = getTypeable cd
+      cd3 = closureDictT cd2 :: ClosureDict (Typeable (Object a))
+      cd4 = closureDictT cd3 :: ClosureDict (Binary (GlobalPtr (Object a)))
+      cd5 = closureDictT cd3 :: ClosureDict (Typeable (GlobalPtr (Object a)))
+      cd6 = combineClosureDict cd4 cd5
+  in closure (static fetchRef2)
+     `cap` cpure cd6 gptr
 
 
 
 --------------------------------------------------------------------------------
 
-newtype SerializedRef a = SerializedRef (GlobalPtr (Object a))
-  deriving (Eq, Binary)
+data SerializedRef a =
+  SerializedRef (ClosureDict (Typeable a)) (GlobalPtr (Object a))
+  deriving Generic
+
+instance Typeable a => Binary (SerializedRef a) where
+  put (SerializedRef dict gptr) = do put dict
+                                     put gptr
+  get = do dict <- get
+           gptr <- get
+           return (SerializedRef dict gptr)
 
 {-# NOINLINE serializeRef #-}
-serializeRef :: ( Static (Typeable a)
-                , Static (Serializable ())
-                , Static (Typeable (MVar ()))
-                , Static (Serializable (GlobalPtr (Object a))))
-             => Ref a -> IO (SerializedRef a)
+serializeRef :: Ref a -> IO (SerializedRef a)
 serializeRef ref =
   do let gptr = globalPtr ref
      incref ref
-     return (SerializedRef gptr)
+     return (SerializedRef (typeableDict ref) gptr)
 
 {-# NOINLINE deserializeRef #-}
-deserializeRef :: ( Static (Typeable a)
-                  , Static (Serializable (GlobalPtr (Object a))))
-               => SerializedRef a -> IO (Ref a)
-deserializeRef (SerializedRef gptr) =
-  do ref <- refFromObject gptr
-     -- Note: Don't decrease the reference count here. We are using
-     -- the serialize object, and we are creating a reference, which
-     -- is combined a neutral operation.
+deserializeRef :: SerializedRef a -> IO (Ref a)
+deserializeRef (SerializedRef dict gptr) =
+  do ref <- refFromObjectCD dict gptr
+     -- Note: Don't decrease the reference count here. We are using up
+     -- the serialized object, and we are creating a reference, which
+     -- combined is refcount-neutral.
      return ref
 
-instance ( Static (Typeable a)
-         , Static (Serializable ())
-         , Static (Typeable (MVar ()))
-         , Static (Serializable (GlobalPtr (Object a)))) =>
-         Binary (Ref a) where
+instance Typeable a => Binary (Ref a) where
   put ref = do let sref = unsafePerformIO (serializeRef ref)
                put sref
   get = do sref <- get
            return (unsafePerformIO (deserializeRef sref))
 
+instance StaticT (Typeable a) (Binary (Ref a)) where
+  closureDictT cd = case unclosure cd of Dict -> closure (static dict) `cap` cd
+    where dict :: Dict (Typeable b) -> Dict (Binary (Ref b))
+          dict Dict = Dict
+
+instance StaticT (Typeable a) (Typeable (Ref a)) where
+  closureDictT cd = case unclosure cd of Dict -> closure (static dict) `cap` cd
+    where dict :: Dict (Typeable b) -> Dict (Typeable (Ref b))
+          dict Dict = Dict
+
 
 
 --------------------------------------------------------------------------------
 
-execLocal :: ( Static (Typeable a)
-             , Static (Serializable (GlobalPtr (Object a))))
+execLocal :: Static (Typeable a)
           => IO a -> IO (Ref a)
-execLocal = execLocalCD closureDict closureDict
+execLocal = execLocalCD closureDict
 
 execLocalCD :: ClosureDict (Typeable a)
-            -> ClosureDict (Serializable (GlobalPtr (Object a)))
             -> IO a -> IO (Ref a)
-execLocalCD cd1 cd2 act =
+execLocalCD cd act =
   do x <- act
-     ref <- newRefCD cd1 cd2 x
+     ref <- newRefCD cd x
      return ref
 
 execLocalC :: ClosureDict (Typeable a)
-           -> ClosureDict (Serializable (GlobalPtr (Object a)))
            -> Closure (IO a) -> Closure (IO (Ref a))
-execLocalC cd1 cd2 cl =
-  withClosureDict cd1 $
+execLocalC cd cl =
+  withClosureDict cd $
   closure (static execLocalCD)
-  `cap` cduplicate cd1
-  `cap` cduplicate cd2
+  `cap` cduplicate cd
   `cap` cl
 
 
 
-local :: ( Static (Typeable a)
-         , Static (Serializable (GlobalPtr (Object a))))
+local :: Static (Typeable a)
       => IO a -> IO (MVar (Ref a))
-local = localCD closureDict closureDict
+local = localCD closureDict
 
 localCD :: ClosureDict (Typeable a)
-        -> ClosureDict (Serializable (GlobalPtr (Object a)))
         -> IO a -> IO (MVar (Ref a))
-localCD cd1 cd2 act =
+localCD cd act =
   do mvar <- newEmptyMVar
-     _ <- forkIO do ref <- execLocalCD cd1 cd2 act
+     _ <- forkIO do ref <- execLocalCD cd act
                     putMVar mvar ref
      return mvar
 
 
 
-remote :: ( Static (Typeable a)
-          , Static (Serializable (GlobalPtr (Object a)))
-          , Static (Serializable (GlobalPtr (MVar (Ref a))))
-          , Static (Serializable (Ref a)))
+remote :: Static (Typeable a)
        => MPI.Rank -> Closure (IO a) -> IO (MVar (Ref a))
-remote = remoteCD closureDict closureDict closureDict closureDict
+remote = remoteCD closureDict
 
-remoteCD :: ClosureDict (Serializable (Ref a))
-         -> ClosureDict (Serializable (GlobalPtr (MVar (Ref a))))
-         -> ClosureDict (Typeable a)
-         -> ClosureDict (Serializable (GlobalPtr (Object a)))
+remoteCD :: forall a. ClosureDict (Typeable a)
          -> MPI.Rank -> Closure (IO a) -> IO (MVar (Ref a))
-remoteCD cd1 cd2 cd3 cd4 rank act =
-  rcallCD cd1 cd2 rank (execLocalC cd3 cd4 act)
+remoteCD cd rank act =
+  withClosureDict cd
+  let cd2 = closureDictT cd :: ClosureDict (Binary (Ref a))
+      cd3 = closureDictT cd :: ClosureDict (Typeable (Ref a))
+      cd4 = combineClosureDict cd2 cd3
+  in rcallCD cd4 rank (execLocalC cd act)
