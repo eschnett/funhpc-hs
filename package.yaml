@@ -1,5 +1,5 @@
 name: funhpc-hs
-version: '0.1.0.0'
+version: '0.1.2.0'
 github: "eschnett/funhpc-hs"
 license: Apache-2.0
 author: "Erik Schnetter <schnetter@gmail.com>"
@@ -79,14 +79,16 @@ library:
     - base
     - binary
     - bytestring
+    - comonad
     - constraints
     - containers
+    - deepseq
     - distributed-closure
+    - distributive
     - monad-loops
-    - mpi-hs
+    - mpi-hs >=0.5.1.2
+    - strict-concurrency
   source-dirs: lib
-  extra-libraries:
-    - mpi
 
 executables:
   funhpc:
@@ -95,10 +97,11 @@ executables:
     dependencies:
       - base
       - binary
+      - deepseq
       - distributed-closure
       - funhpc-hs
       - hostname
-      - mpi-hs
+      - mpi-hs >=0.5.1.2
     ghc-options:
       - -rtsopts
       - -threaded

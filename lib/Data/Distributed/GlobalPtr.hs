@@ -1,5 +1,5 @@
-{-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE StaticPointers #-}
+{-# LANGUAGE UndecidableInstances #-}
 
 module Data.Distributed.GlobalPtr
   ( GlobalPtr(..)
@@ -9,14 +9,15 @@ module Data.Distributed.GlobalPtr
   , freeGlobalPtr
   ) where
 
-import Control.Exception (assert)
+import Control.Exception
 import Data.Coerce
 import Foreign
+import Foreign.C.Types
 import GHC.Generics
 import Type.Reflection
 
-import Control.Distributed.Closure
-import Control.Distributed.Closure.StaticT
+import Control.Distributed.Closure hiding (Static(..))
+import Control.Distributed.Closure.Static
 import Data.Binary
 
 import qualified Control.Distributed.MPI.Binary as MPI
@@ -25,8 +26,7 @@ import Control.Distributed.MPI.World
 
 
 -- | A pointer to an object that lives on a particular rank
-data GlobalPtr a where
-  GlobalPtr :: MPI.Rank -> StablePtr a -> GlobalPtr a
+data GlobalPtr a = GlobalPtr !MPI.Rank !(StablePtr a)
   deriving (Eq, Generic)
 
 instance Typeable a => Binary (GlobalPtr a) where
@@ -38,15 +38,46 @@ instance Typeable a => Binary (GlobalPtr a) where
        ptr <- (castPtrToStablePtr . wordPtrToPtr . coerce) <$> get @Word
        return (GlobalPtr rank ptr)
 
-instance StaticT (Typeable a) (Binary (GlobalPtr a)) where
-  closureDictT cd = case unclosure cd of Dict -> closure (static dict) `cap` cd
-    where dict :: Dict (Typeable b) -> Dict (Binary (GlobalPtr b))
-          dict Dict = Dict
+instance Typeable a => Storable (GlobalPtr a) where
+  sizeOf _ =
+    let offset = max
+                 (sizeOf (undefined::CInt))
+                 (alignment (undefined::StablePtr a))
+    in offset + sizeOf (undefined::StablePtr a)
+  alignment _ =
+    max (alignment (undefined::CInt)) (alignment (undefined::StablePtr a))
+  poke ptr (GlobalPtr rank sptr) =
+    do let irank :: CInt = coerce rank
+       let offset = max (sizeOf (undefined::CInt)) (alignment sptr)
+       pokeByteOff (castPtr ptr) 0 irank
+       pokeByteOff (castPtr ptr) offset sptr
+  peek ptr =
+    do let offset =
+             max (sizeOf (undefined::CInt)) (alignment (undefined::StablePtr a))
+       irank :: CInt <- peekByteOff (castPtr ptr) 0
+       sptr <- peekByteOff (castPtr ptr) offset
+       let rank = coerce irank
+       return (GlobalPtr rank sptr)
 
-instance StaticT (Typeable a) (Typeable (GlobalPtr a)) where
-  closureDictT cd = case unclosure cd of Dict -> closure (static dict) `cap` cd
+instance Static (Typeable a) => Static (Typeable (GlobalPtr a)) where
+  closureDict = static dict `cap` closureDict
     where dict :: Dict (Typeable b) -> Dict (Typeable (GlobalPtr b))
           dict Dict = Dict
+  closureDictStatic = static dict `cap` closureDictStatic
+    where dict :: Dict (Static (Typeable b))
+               -> Dict (Static (Typeable (GlobalPtr b)))
+          dict Dict = Dict
+
+instance Static (Typeable a) => Static (Binary (GlobalPtr a)) where
+  closureDict = static dict `cap` closureDict
+    where dict :: Dict (Typeable b) -> Dict (Binary (GlobalPtr b))
+          dict Dict = Dict
+  closureDictStatic = static dict `cap` closureDictStatic
+    where dict :: Dict (Static (Typeable b))
+               -> Dict (Static (Binary (GlobalPtr b)))
+          dict Dict = Dict
+
+
 
 newGlobalPtr :: a -> IO (GlobalPtr a)
 newGlobalPtr x =

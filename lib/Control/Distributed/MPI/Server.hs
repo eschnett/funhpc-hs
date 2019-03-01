@@ -5,36 +5,33 @@ module Control.Distributed.MPI.Server
   , lexec
   , lcall
   , rexec
-  , rcall
-  , rcallCD
   , RVar
+  , rcall
   , rsend
-  , rsendCD
   , rfetch
-  , rfetchCD
   ) where
 
 import Control.Concurrent
 import Control.Monad
 import Control.Monad.Loops
 import Data.Binary
-import Data.IORef
 import Data.Maybe
 import System.IO
 import Type.Reflection
 
-import Control.Distributed.Closure
-import Control.Distributed.Closure.Instances()
-import Control.Distributed.Closure.StaticT
+import Control.Distributed.Closure hiding (Static(..))
+import Control.Distributed.Closure.ClosureDict
+import Control.Distributed.Closure.Static
 
 import Control.Distributed.MPI.World
 import qualified Control.Distributed.MPI.Binary as MPI
+import Data.Distributed.Future
 import Data.Distributed.GlobalPtr
 
 
 
 optimizeLocalCalls :: Bool
-optimizeLocalCalls = True
+optimizeLocalCalls = False      --TODO True
 
 
 
@@ -44,12 +41,12 @@ runServer mainTask =
   do when (worldRank == worldRoot)
        do putStrLn ("*** Starting MPI server on " ++ show worldSize ++
                     " processes ***")
+          hFlush stdout
 
-     -- TODO: Shouldn't this be atomic? Can we use an 'MVar ()' instead?
-     breq <- newIORef Nothing
+     breq <- newEmptyFuture
      let signalDone = do req <- MPI.ibarrier worldComm
-                         writeIORef breq (Just req)
-     let checkDone = do mreq <- readIORef breq
+                         putFuture breq req
+     let checkDone = do mreq <- tryReadFuture breq
                         case mreq of
                           Nothing -> return False
                           Just req -> isJust <$> MPI.test_ req
@@ -65,29 +62,35 @@ runServer mainTask =
      hFlush stderr
      MPI.barrier worldComm
      when (worldRank == worldRoot) do putStrLn "*** Done. ***"
+                                      hFlush stdout
 
      when (worldRank == worldRoot)
        do putStrLn ""
           putStrLn "Calling MPI_Abort to terminate the program."
           putStrLn "Please ignore any warnings about MPI_Abort being called."
           putStrLn "All is fine."
+          hFlush stdout
      MPI.abort worldComm 0
 
      return ()
 
 
 
-lexec :: IO () -> IO ()
-lexec act =
-  do _ <- forkIO act
-     return ()
+forkIO_ :: IO () -> IO ()
+forkIO_ s = do _ <- forkIO s
+               return ()
 
-lcall :: IO a -> IO (MVar a)
-lcall act =
-  do mvar <- newEmptyMVar
-     _ <- forkIO do x <- act
-                    putMVar mvar x
-     return mvar
+
+
+type RVar a = GlobalPtr (Future a)
+
+
+
+lexec :: IO () -> IO ()
+lexec = forkIO_
+
+lcall :: IO a -> IO (Future a)
+lcall = forkFuture
 
 
 
@@ -104,121 +107,90 @@ rexecServer :: IO ()
 rexecServer =
   forever
   do (cl :: Closure (IO ())) <- MPI.recv_ MPI.anySource rexecTag worldComm
-     _ <- forkIO do unclosure cl
-     return ()
+     lexec (unclosure cl)
 
 
 
-type RVar a = GlobalPtr (MVar a)
-
-
-
-rcall :: Static (Serializable a)
-      => MPI.Rank -> Closure (IO a) -> IO (MVar a)
-rcall = rcallCD closureDict
-
-rcallCD :: ClosureDict (Serializable a)
-        -> MPI.Rank -> Closure (IO a) -> IO (MVar a)
-rcallCD cd rank cl =
+rcall :: ( Static (Binary a)
+         , Static (Typeable a))
+      => MPI.Rank -> Closure (IO a) -> IO (Future a)
+rcall rank cl =
   if optimizeLocalCalls && rank == worldRank
   then lcall (unclosure cl)
-  else do rmvar <- newEmptyMVar
+  else do rmvar <- newEmptyFuture
           rptr <- newGlobalPtr rmvar
-          rexec rank (rcall2C cd rptr cl)
+          rexec rank (rcall2C rptr cl)
           return rmvar
 
-rcall2CD :: ClosureDict (Serializable a)
-         -> RVar a -> IO a -> IO ()
-rcall2CD cd rptr act =
+rcall2 :: ( Static (Binary a)
+          , Static (Typeable a))
+       => RVar a -> IO a -> IO ()
+rcall2 rptr act =
   do res <- act
-     rexec (globalPtrRank rptr) (rcall3C cd rptr res)
+     rexec (globalPtrRank rptr) (rcall3C rptr res)
 
-rcall2C :: forall a. ClosureDict (Serializable a)
-        -> RVar a -> Closure (IO a) -> Closure (IO ())
-rcall2C cd rptr cl =
-  withClosureDict cd
-  let cd2 = getTypeable cd
-      cd3 = closureDictT cd2 :: ClosureDict (Typeable (MVar a))
-      cd4 = closureDictT cd3 :: ClosureDict (Binary (GlobalPtr (MVar a)))
-      cd5 = closureDictT cd3 :: ClosureDict (Typeable (GlobalPtr (MVar a)))
-      cd6 = combineClosureDict cd4 cd5
-  in closure (static rcall2CD)
-  `cap` cduplicate cd
-  `cap` cpure cd6 rptr
+rcall2C :: ( Static (Binary a)
+           , Static (Typeable a))
+        => RVar a -> Closure (IO a) -> Closure (IO ())
+rcall2C rptr cl =
+  static rcall2D
+  `cap` closureDictStatic
+  `cap` closureDictStatic
+  `cap` cpure closureDict rptr
   `cap` cl
+  where rcall2D :: Dict (Static (Binary a))
+                -> Dict (Static (Typeable a))
+                -> RVar a -> IO a -> IO ()
+        rcall2D Dict Dict = rcall2
 
 rcall3 :: RVar a -> a -> IO ()
 rcall3 rptr res =
   do Just mvar <- deRefGlobalPtr rptr
-     putMVar mvar res
+     putFuture mvar res
 
-rcall3C :: forall a. ClosureDict (Serializable a)
-        -> RVar a -> a -> Closure (IO ())
-rcall3C cd rptr res =
-  withClosureDict cd
-  let cd2 = getTypeable cd
-      cd3 = closureDictT cd2 :: ClosureDict (Typeable (MVar a))
-      cd4 = closureDictT cd3 :: ClosureDict (Binary (GlobalPtr (MVar a)))
-      cd5 = closureDictT cd3 :: ClosureDict (Typeable (GlobalPtr (MVar a)))
-      cd6 = combineClosureDict cd4 cd5
-  in closure (static rcall3)
-     `cap` cpure cd6 rptr
-     `cap` cpure cd res
+rcall3C :: ( Static (Binary a)
+           , Static (Typeable a))
+        => RVar a -> a -> Closure (IO ())
+rcall3C rptr res =
+  static rcall3 `cap` cpure closureDict rptr `cap` cpure closureDict res
 
 
 
-rsend :: Static (Serializable a)
+rsend :: ( Static (Binary a)
+         , Static (Typeable a))
       => RVar a -> a -> IO ()
-rsend = rsendCD closureDict
-
-rsendCD :: ClosureDict (Serializable a)
-        -> RVar a -> a -> IO ()
-rsendCD cd gptr val =
-  rexec (globalPtrRank gptr) (rsend2C cd gptr val)
+rsend gptr val =
+  rexec (globalPtrRank gptr) (rsend2C gptr val)
 
 rsend2 :: RVar a -> a -> IO ()
 rsend2 gptr val =
   do Just mvar <- deRefGlobalPtr gptr
-     putMVar mvar val
+     putFuture mvar val
 
-rsend2C :: forall a. ClosureDict (Serializable a)
-        -> RVar a -> a -> Closure (IO ())
-rsend2C cd gptr val =
-  withClosureDict cd
-  let cd2 = getTypeable cd
-      cd3 = closureDictT cd2 :: ClosureDict (Typeable (MVar a))
-      cd4 = closureDictT cd3 :: ClosureDict (Binary (GlobalPtr (MVar a)))
-      cd5 = closureDictT cd3 :: ClosureDict (Typeable (GlobalPtr (MVar a)))
-      cd6 = combineClosureDict cd4 cd5
-  in closure (static rsend2)
-     `cap` cpure cd6 gptr
-     `cap` cpure cd val
+rsend2C :: ( Static (Binary a)
+           , Static (Typeable a))
+        => RVar a -> a -> Closure (IO ())
+rsend2C gptr val =
+  static rsend2
+  `cap` cpure closureDict gptr
+  `cap` cpure closureDict val
 
 
 
-rfetch :: Static (Serializable a)
-       => RVar a -> IO (MVar a)
-rfetch = rfetchCD closureDict
-
-rfetchCD :: ClosureDict (Serializable a)
-         -> RVar a -> IO (MVar a)
-rfetchCD cd gptr =
-  rcallCD cd (globalPtrRank gptr) (rfetch2C cd gptr)
+rfetch :: ( Static (Binary a)
+          , Static (Typeable a))
+       => RVar a -> IO (Future a)
+rfetch gptr =
+  rcall (globalPtrRank gptr) (rfetch2C gptr)
 
 rfetch2 :: RVar a -> IO a
 rfetch2 gptr =
   do Just mvar <- deRefGlobalPtr gptr
-     val <- readMVar mvar
+     val <- readFuture mvar
      return val
 
-rfetch2C :: forall a. ClosureDict (Serializable a)
-         -> RVar a -> Closure (IO a)
-rfetch2C cd gptr =
-  withClosureDict cd
-  let cd2 = getTypeable cd
-      cd3 = closureDictT cd2 :: ClosureDict (Typeable (MVar a))
-      cd4 = closureDictT cd3 :: ClosureDict (Binary (GlobalPtr (MVar a)))
-      cd5 = closureDictT cd3 :: ClosureDict (Typeable (GlobalPtr (MVar a)))
-      cd6 = combineClosureDict cd4 cd5
-  in closure (static rfetch2)
-     `cap` cpure cd6 gptr
+rfetch2C :: Static (Typeable a)
+         => RVar a -> Closure (IO a)
+rfetch2C gptr =
+  static rfetch2
+  `cap` cpure closureDict gptr

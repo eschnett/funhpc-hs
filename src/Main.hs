@@ -1,33 +1,36 @@
 {-# LANGUAGE StaticPointers #-}
 {-# LANGUAGE UndecidableInstances #-}
 
-import Control.Concurrent
+import Control.DeepSeq
 import Control.Monad
 import Network.HostName
+import System.IO
 import System.Mem
 
-import Control.Distributed.Closure
-import Control.Distributed.Closure.Instances()
+import Control.Distributed.Closure hiding (Static(..))
+import Control.Distributed.Closure.Static
 
 import qualified Control.Distributed.MPI as MPI
 import Control.Distributed.MPI.Server
 import Control.Distributed.MPI.World
+import Data.Distributed.Future
 import Data.Distributed.Ref
 
 
 
 main :: IO ()
 main =
-  runServer
-  do runBounce
-     runHostNames
-     runTreeLCall
-     runTreeRCall
-     runSimpleRef
-     runSimpleLocal
-     runTreeLocal
-     runSimpleRemote
-     runTreeRemote
+  do hSetBuffering stdout LineBuffering
+     runServer
+       do --TODO runBounce
+          --TODO runHostNames
+          --TODO runTreeLCall
+          --TODO runTreeRCall
+          --TODO runSimpleRef
+          --TODO runSimpleLocal
+          --TODO runTreeLocal
+          --TODO runSimpleRemote
+          runTreeRemote
 
 
 
@@ -36,18 +39,16 @@ runBounce =
   do let msg = "Hello, World!" :: String
      putStrLn $ "Sending: " ++ show msg
      ftr <- rcall (1 `mod` worldSize) (bounceC msg)
-     msg' <- takeMVar ftr
+     msg' <- readFuture ftr
      putStrLn $ "Received: " ++ show msg'
-     
+
 bounce :: String -> IO String
 bounce msg =
   do rank <- MPI.commRank MPI.commWorld
      return $ "[" ++ show rank ++ "]: " ++ msg
 
 bounceC :: String -> Closure (IO String)
-bounceC msg =
-  closure (static bounce)
-  `cap` cpure closureDict msg
+bounceC msg = static bounce `cap` cpure closureDict msg
 
 
 
@@ -60,7 +61,7 @@ hostName = do hn <- getHostName
               putStrLn $ "[" ++ show worldRank ++ "]: " ++  hn
 
 hostNameC :: Closure (IO ())
-hostNameC = closure (static hostName)
+hostNameC = static hostName
 
 
 
@@ -78,12 +79,12 @@ treeLCall n =
      let n2 = n' - n1
      ftr1 <- if n1 > 0
              then lcall (treeLCall n1)
-             else newMVar 0
+             else newFuture 0
      ftr2 <- if n2 > 0
              then lcall (treeLCall n2)
-             else newMVar 0
-     res1 <- takeMVar ftr1
-     res2 <- takeMVar ftr2
+             else newFuture 0
+     res1 <- readFuture ftr1
+     res2 <- readFuture ftr2
      return $ 1 + res1 + res2
 
 
@@ -104,17 +105,17 @@ treeRCall r n =
      let r2 = 2 * r + 2
      ftr1 <- if n1 > 0
              then rcall (MPI.toRank r1 `mod` worldSize) (treeRCallC r1 n1)
-             else newMVar 0
+             else newFuture 0
      ftr2 <- if n2 > 0
              then rcall (MPI.toRank r2 `mod` worldSize) (treeRCallC r2 n2)
-             else newMVar 0
-     res1 <- takeMVar ftr1
-     res2 <- takeMVar ftr2
+             else newFuture 0
+     res1 <- readFuture ftr1
+     res2 <- readFuture ftr2
      return $ 1 + res1 + res2
 
 treeRCallC :: Int -> Int -> Closure (IO Int)
 treeRCallC r n =
-  closure (static treeRCall)
+  static treeRCall
   `cap` cpure closureDict r
   `cap` cpure closureDict n
 
@@ -125,9 +126,9 @@ runSimpleRef =
   do putStrLn "Starting simple ref"
      let n = 42 :: Int
      rn <- newRef n
-     performGC
-     n' <- takeMVar =<< fetchRef rn
-     performGC
+     -- performGC
+     n' <- readFuture =<< fetchRef rn
+     -- performGC
      putStrLn $ "Result: " ++ show n' ++ " = " ++ show n
 
 
@@ -137,9 +138,9 @@ runSimpleLocal =
   do putStrLn "Starting simple local"
      let n = 42 :: Int
      rn <- local (return n)
-     performGC
-     n' <- takeMVar =<< fetchRef =<< takeMVar rn
-     performGC
+     -- performGC
+     n' <- readFuture =<< fetchRef =<< readFuture rn
+     -- performGC
      putStrLn $ "Result: " ++ show n' ++ " = " ++ show n
 
 
@@ -156,15 +157,15 @@ treeLocal n =
   do let n' = n - 1
      let n1 = n' `div` 2
      let n2 = n' - n1
-     performGC
+     -- performGC
      ftr1 <- if n1 > 0
              then local (treeLocal n1)
-             else newMVar =<< newRef 0
+             else newFuture =<< newRef 0
      ftr2 <- if n2 > 0
              then local (treeLocal n2)
-             else newMVar =<< newRef 0
-     res1 <- takeMVar =<< fetchRef =<< takeMVar ftr1
-     res2 <- takeMVar =<< fetchRef =<< takeMVar ftr2
+             else newFuture =<< newRef 0
+     res1 <- readFuture =<< fetchRef =<< readFuture ftr1
+     res2 <- readFuture =<< fetchRef =<< readFuture ftr2
      return $ 1 + res1 + res2
 
 
@@ -173,10 +174,10 @@ runSimpleRemote :: IO ()
 runSimpleRemote =
   do putStrLn "Starting simple remote"
      let n = 42 :: Int
-     rn <- remote worldRank $ closure (static (return n))
-     performGC
-     n' <- takeMVar =<< fetchRef =<< takeMVar rn
-     performGC
+     rn <- remote worldRank $ static (return n)
+     -- performGC
+     n' <- readFuture =<< fetchRef =<< readFuture rn
+     -- performGC
      putStrLn $ "Result: " ++ show n' ++ " = " ++ show n
 
 
@@ -195,23 +196,29 @@ treeRemote r n =
      let n2 = n' - n1
      let r1 = 2 * r + 1
      let r2 = 2 * r + 2
-     performGC
+     -- performGC
      ftr1 <- if n1 > 0
              then remote (MPI.toRank r1 `mod` worldSize) (treeRemoteC r1 n1)
-             else newMVar =<< newRef 0
-     performGC
+             else newFuture =<< newRef 0
+     -- performGC
      ftr2 <- if n2 > 0
              then remote (MPI.toRank r2 `mod` worldSize) (treeRemoteC r2 n2)
-             else newMVar =<< newRef 0
-     performGC
-     res1 <- takeMVar =<< fetchRef =<< takeMVar ftr1
-     performGC
-     res2 <- takeMVar =<< fetchRef =<< takeMVar ftr2
-     performGC
+             else newFuture =<< newRef 0
+     -- performGC
+     res1 <- readFuture =<< fetchRef =<< readFuture ftr1
+     -- performGC
+     res2 <- readFuture =<< fetchRef =<< readFuture ftr2
+     -- performGC
      return $ 1 + res1 + res2
 
 treeRemoteC :: Int -> Int -> Closure (IO Int)
 treeRemoteC r n =
-  closure (static treeRemote)
+  static treeRemote
   `cap` cpure closureDict r
   `cap` cpure closureDict n
+
+
+
+instance Static (NFData Int) where
+  closureDict = static Dict
+  closureDictStatic = static Dict
