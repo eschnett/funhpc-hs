@@ -4,9 +4,11 @@ module Control.Distributed.MPI.Server
   ( runServer
   , lexec
   , lcall
+  , lcall'
   , rexec
   , RVar
   , rcall
+  , rcall'
   , rsend
   , rfetch
   ) where
@@ -15,12 +17,13 @@ import Control.Concurrent
 import Control.Monad
 import Control.Monad.Loops
 import Data.Binary
+import Data.IORef
 import Data.Maybe
 import System.IO
+import System.IO.Unsafe
 import Type.Reflection
 
 import Control.Distributed.Closure hiding (Static(..))
-import Control.Distributed.Closure.ClosureDict
 import Control.Distributed.Closure.Static
 
 import Control.Distributed.MPI.World
@@ -51,10 +54,10 @@ runServer mainTask =
                           Nothing -> return False
                           Just req -> isJust <$> MPI.test_ req
 
-     _ <- forkIO rexecServer
+     forkIO_ rexecServer
 
-     _ <- forkIO do when (worldRank == worldRoot) mainTask
-                    signalDone
+     forkIO_ do when (worldRank == worldRoot) mainTask
+                signalDone
 
      whileM_ (not <$> checkDone) yield
 
@@ -76,8 +79,14 @@ runServer mainTask =
 
 
 
+threads :: IORef [ThreadId]
+threads = unsafePerformIO $ newIORef []
+
 forkIO_ :: IO () -> IO ()
-forkIO_ s = do _ <- forkIO s
+--TODO forkIO_ s = do _ <- forkIO s
+--TODO                return ()
+forkIO_ s = do tid <- forkIO s
+               atomicModifyIORef' threads \tids -> (tid:tids, ())
                return ()
 
 
@@ -91,6 +100,9 @@ lexec = forkIO_
 
 lcall :: IO a -> IO (Future a)
 lcall = forkFuture
+
+lcall' :: Closure a -> IO (Future a)
+lcall' cl = forkFuture (return (unclosure cl))
 
 
 
@@ -111,8 +123,7 @@ rexecServer =
 
 
 
-rcall :: ( Static (Binary a)
-         , Static (Typeable a))
+rcall :: (Static (Binary a), Static (Typeable a))
       => MPI.Rank -> Closure (IO a) -> IO (Future a)
 rcall rank cl =
   if optimizeLocalCalls && rank == worldRank
@@ -122,15 +133,12 @@ rcall rank cl =
           rexec rank (rcall2C rptr cl)
           return rmvar
 
-rcall2 :: ( Static (Binary a)
-          , Static (Typeable a))
-       => RVar a -> IO a -> IO ()
+rcall2 :: (Static (Binary a), Static (Typeable a)) => RVar a -> IO a -> IO ()
 rcall2 rptr act =
   do res <- act
      rexec (globalPtrRank rptr) (rcall3C rptr res)
 
-rcall2C :: ( Static (Binary a)
-           , Static (Typeable a))
+rcall2C :: (Static (Binary a), Static (Typeable a))
         => RVar a -> Closure (IO a) -> Closure (IO ())
 rcall2C rptr cl =
   static rcall2D
@@ -146,19 +154,57 @@ rcall2C rptr cl =
 rcall3 :: RVar a -> a -> IO ()
 rcall3 rptr res =
   do Just mvar <- deRefGlobalPtr rptr
+     freeGlobalPtr rptr
      putFuture mvar res
 
-rcall3C :: ( Static (Binary a)
-           , Static (Typeable a))
+rcall3C :: (Static (Binary a), Static (Typeable a))
         => RVar a -> a -> Closure (IO ())
 rcall3C rptr res =
   static rcall3 `cap` cpure closureDict rptr `cap` cpure closureDict res
 
 
 
-rsend :: ( Static (Binary a)
-         , Static (Typeable a))
-      => RVar a -> a -> IO ()
+rcall' :: (Static (Binary a), Static (Typeable a))
+       => MPI.Rank -> Closure a -> IO (Future a)
+rcall' rank cl =
+  if optimizeLocalCalls && rank == worldRank
+  then lcall' cl
+  else do rmvar <- newEmptyFuture
+          rptr <- newGlobalPtr rmvar
+          rexec rank (rcall2C' rptr cl)
+          return rmvar
+
+rcall2' :: (Static (Binary a), Static (Typeable a)) => RVar a -> a -> IO ()
+rcall2' rptr val =
+  rexec (globalPtrRank rptr) (rcall3C' rptr val)
+
+rcall2C' :: (Static (Binary a), Static (Typeable a))
+         => RVar a -> Closure a -> Closure (IO ())
+rcall2C' rptr cl =
+  static rcall2D'
+  `cap` closureDictStatic
+  `cap` closureDictStatic
+  `cap` cpure closureDict rptr
+  `cap` cl
+  where rcall2D' :: Dict (Static (Binary a))
+                 -> Dict (Static (Typeable a))
+                 -> RVar a -> a -> IO ()
+        rcall2D' Dict Dict = rcall2'
+
+rcall3' :: RVar a -> a -> IO ()
+rcall3' rptr res =
+  do Just mvar <- deRefGlobalPtr rptr
+     freeGlobalPtr rptr
+     putFuture mvar res
+
+rcall3C' :: (Static (Binary a), Static (Typeable a))
+         => RVar a -> a -> Closure (IO ())
+rcall3C' rptr res =
+  static rcall3' `cap` cpure closureDict rptr `cap` cpure closureDict res
+
+
+
+rsend :: (Static (Binary a), Static (Typeable a)) => RVar a -> a -> IO ()
 rsend gptr val =
   rexec (globalPtrRank gptr) (rsend2C gptr val)
 
@@ -167,8 +213,7 @@ rsend2 gptr val =
   do Just mvar <- deRefGlobalPtr gptr
      putFuture mvar val
 
-rsend2C :: ( Static (Binary a)
-           , Static (Typeable a))
+rsend2C :: (Static (Binary a), Static (Typeable a))
         => RVar a -> a -> Closure (IO ())
 rsend2C gptr val =
   static rsend2
@@ -177,9 +222,7 @@ rsend2C gptr val =
 
 
 
-rfetch :: ( Static (Binary a)
-          , Static (Typeable a))
-       => RVar a -> IO (Future a)
+rfetch :: (Static (Binary a), Static (Typeable a)) => RVar a -> IO (Future a)
 rfetch gptr =
   rcall (globalPtrRank gptr) (rfetch2C gptr)
 
@@ -189,8 +232,7 @@ rfetch2 gptr =
      val <- readFuture mvar
      return val
 
-rfetch2C :: Static (Typeable a)
-         => RVar a -> Closure (IO a)
+rfetch2C :: Static (Typeable a) => RVar a -> Closure (IO a)
 rfetch2C gptr =
   static rfetch2
   `cap` cpure closureDict gptr

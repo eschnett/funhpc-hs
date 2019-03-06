@@ -1,7 +1,6 @@
 {-# LANGUAGE StaticPointers #-}
 {-# LANGUAGE UndecidableInstances #-}
 
-import Control.DeepSeq
 import Control.Monad
 import Network.HostName
 import System.IO
@@ -25,7 +24,7 @@ main =
        do --TODO runBounce
           --TODO runHostNames
           --TODO runTreeLCall
-          --TODO runTreeRCall
+          runTreeRCall
           --TODO runSimpleRef
           --TODO runSimpleLocal
           --TODO runTreeLocal
@@ -126,9 +125,9 @@ runSimpleRef =
   do putStrLn "Starting simple ref"
      let n = 42 :: Int
      rn <- newRef n
-     -- performGC
+     performGC
      n' <- readFuture =<< fetchRef rn
-     -- performGC
+     performGC
      putStrLn $ "Result: " ++ show n' ++ " = " ++ show n
 
 
@@ -138,9 +137,9 @@ runSimpleLocal =
   do putStrLn "Starting simple local"
      let n = 42 :: Int
      rn <- local (return n)
-     -- performGC
+     performGC
      n' <- readFuture =<< fetchRef =<< readFuture rn
-     -- performGC
+     performGC
      putStrLn $ "Result: " ++ show n' ++ " = " ++ show n
 
 
@@ -157,7 +156,7 @@ treeLocal n =
   do let n' = n - 1
      let n1 = n' `div` 2
      let n2 = n' - n1
-     -- performGC
+     performGC
      ftr1 <- if n1 > 0
              then local (treeLocal n1)
              else newFuture =<< newRef 0
@@ -175,9 +174,9 @@ runSimpleRemote =
   do putStrLn "Starting simple remote"
      let n = 42 :: Int
      rn <- remote worldRank $ static (return n)
-     -- performGC
+     performGC
      n' <- readFuture =<< fetchRef =<< readFuture rn
-     -- performGC
+     performGC
      putStrLn $ "Result: " ++ show n' ++ " = " ++ show n
 
 
@@ -196,19 +195,19 @@ treeRemote r n =
      let n2 = n' - n1
      let r1 = 2 * r + 1
      let r2 = 2 * r + 2
-     -- performGC
+     performGC
      ftr1 <- if n1 > 0
              then remote (MPI.toRank r1 `mod` worldSize) (treeRemoteC r1 n1)
              else newFuture =<< newRef 0
-     -- performGC
+     performGC
      ftr2 <- if n2 > 0
              then remote (MPI.toRank r2 `mod` worldSize) (treeRemoteC r2 n2)
              else newFuture =<< newRef 0
-     -- performGC
+     performGC
      res1 <- readFuture =<< fetchRef =<< readFuture ftr1
-     -- performGC
+     performGC
      res2 <- readFuture =<< fetchRef =<< readFuture ftr2
-     -- performGC
+     performGC
      return $ 1 + res1 + res2
 
 treeRemoteC :: Int -> Int -> Closure (IO Int)
@@ -216,9 +215,3 @@ treeRemoteC r n =
   static treeRemote
   `cap` cpure closureDict r
   `cap` cpure closureDict n
-
-
-
-instance Static (NFData Int) where
-  closureDict = static Dict
-  closureDictStatic = static Dict

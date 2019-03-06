@@ -17,6 +17,7 @@ import Control.Comonad
 import Control.Concurrent
 -- import Control.Concurrent.MVar.Strict
 import Data.Distributive
+import Data.IORef
 import System.IO.Unsafe
 import Type.Reflection
 
@@ -49,9 +50,17 @@ newFuture x = Future <$> newMVar x
 
 forkFuture :: IO a -> IO (Future a)
 forkFuture s = do r <- newEmptyFuture
-                  _ <- forkIO do x <- s
-                                 putFuture r x
+                  --TODO _ <- forkIO do s >>= putFuture r
+                  forkIO_ do s >>= putFuture r
                   return r
+threads :: IORef [ThreadId]
+threads = unsafePerformIO $ newIORef []
+forkIO_ :: IO () -> IO ()
+--TODO forkIO_ s = do _ <- forkIO s
+--TODO                return ()
+forkIO_ s = do tid <- forkIO s
+               atomicModifyIORef' threads \tids -> (tid:tids, ())
+               return ()
 
 putFuture :: Future a -> a -> IO ()
 putFuture (Future v) = putMVar v
@@ -63,42 +72,41 @@ isEmptyFuture :: Future a -> IO Bool
 isEmptyFuture (Future v) = isEmptyMVar v
 
 waitFuture :: Future a -> IO ()
-waitFuture (Future v) = do _ <- readMVar v
-                           return ()
+waitFuture (Future v) = readMVar v >> return ()
 
 tryReadFuture :: Future a -> IO (Maybe a)
 tryReadFuture (Future v) = tryReadMVar v
 
 
 
-instance Foldable Future where
-  foldMap f v = f (unsafeDupablePerformIO (readFuture v))
-
-instance Functor Future where
-  fmap f v = unsafePerformIO do forkFuture do x <- readFuture v
-                                              return (f x)
-
-instance Applicative Future where
-  pure x = unsafePerformIO do newFuture x
-  liftA2 f v w = unsafePerformIO do forkFuture do x <- readFuture v
-                                                  y <- readFuture w
-                                                  return (f x y)
-
--- We don't define this since it is not a "natural" operation
--- instance Traversable Future where
---   traverse :: Applicative f => (a -> f b) -> Future a -> f (Future b)
---   traverse f v = let x = (unsafeDupablePerformIO . readFuture) v
---                      y = f x
---                  in unsafePerformIO . newFuture <$> y
-
-instance Monad Future where
-  v >>= f = unsafePerformIO do forkFuture do x <- readFuture v
-                                             readFuture (f x)
-
-instance Distributive Future where
-  collect :: Functor f => (a -> Future b) -> f a -> Future (f b)
-  collect f xs = unsafePerformIO do forkFuture do return ((extract . f) <$> xs)
-
-instance Comonad Future where
-  extract v = unsafeDupablePerformIO do readFuture v
-  extend f v = unsafePerformIO do forkFuture do return (f v)
+--TODO instance Foldable Future where
+--TODO   foldMap f v = f (unsafeDupablePerformIO (readFuture v))
+--TODO 
+--TODO instance Functor Future where
+--TODO   fmap f v = unsafePerformIO do forkFuture do x <- readFuture v
+--TODO                                               return (f x)
+--TODO 
+--TODO instance Applicative Future where
+--TODO   pure x = unsafePerformIO do newFuture x
+--TODO   liftA2 f v w = unsafePerformIO do forkFuture do x <- readFuture v
+--TODO                                                   y <- readFuture w
+--TODO                                                   return (f x y)
+--TODO 
+--TODO -- We don't define this since it is not a "natural" operation
+--TODO -- instance Traversable Future where
+--TODO --   traverse :: Applicative f => (a -> f b) -> Future a -> f (Future b)
+--TODO --   traverse f v = let x = (unsafeDupablePerformIO . readFuture) v
+--TODO --                      y = f x
+--TODO --                  in unsafePerformIO . newFuture <$> y
+--TODO 
+--TODO instance Monad Future where
+--TODO   v >>= f = unsafePerformIO do forkFuture do x <- readFuture v
+--TODO                                              readFuture (f x)
+--TODO 
+--TODO instance Distributive Future where
+--TODO   collect :: Functor f => (a -> Future b) -> f a -> Future (f b)
+--TODO   collect f xs = unsafePerformIO do forkFuture do return ((extract . f) <$> xs)
+--TODO 
+--TODO instance Comonad Future where
+--TODO   extract v = unsafeDupablePerformIO do readFuture v
+--TODO   extend f v = unsafePerformIO do forkFuture do return (f v)

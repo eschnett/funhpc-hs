@@ -82,7 +82,6 @@ library:
     - comonad
     - constraints
     - containers
-    - deepseq
     - distributed-closure
     - distributive
     - monad-loops
@@ -97,7 +96,6 @@ executables:
     dependencies:
       - base
       - binary
-      - deepseq
       - distributed-closure
       - funhpc-hs
       - hostname
