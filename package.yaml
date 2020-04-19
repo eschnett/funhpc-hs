@@ -16,8 +16,8 @@ extra-source-files:
 
 ghc-options:
   - -foptimal-applicative-do
+  - -fprint-potential-instances
   - -funbox-strict-fields
-  - -fprint-potential-instances #TODO
   - -Wall
   - -Wcompat
   - -Wincomplete-record-updates
@@ -85,7 +85,8 @@ library:
     - distributed-closure
     - distributive
     - monad-loops
-    - mpi-hs >=0.5.1.2
+    - mpi-hs >=0.7.0.0
+    - mpi-hs-binary
     - strict-concurrency
   source-dirs: lib
 
@@ -99,7 +100,8 @@ executables:
       - distributed-closure
       - funhpc-hs
       - hostname
-      - mpi-hs >=0.5.1.2
+      - mpi-hs >=0.7.0.0
+      - mpi-hs-binary
     ghc-options:
       - -rtsopts
       - -threaded

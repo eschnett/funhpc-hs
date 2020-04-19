@@ -1,13 +1,10 @@
 # Resolver to choose a 'specific' stackage snapshot or a compiler version.
-resolver: lts-13.10
+# resolver: lts-15.9
+resolver: nightly-2020-04-18
 
 # User packages to be built.
 packages:
   - .
 
 extra-deps:
-  - mpi-hs-0.5.1.2
-  # - https://github.com/eschnett/mpi-hs/archive/v0.4.1.0.tar.gz
-  # - git: https://github.com/eschnett/mpi-hs.git
-  #   commit: 8fe90abc8bbf6f0a3667353a5801eda71a01078b # v0.2.0.0
-  # - ../mpi-hs
+  - mpi-hs-binary-0.1.1.0@sha256:0e17011c2ec371f638a7b5786f81d4f9679301d1c72291af66ed35a0326ad607,4021

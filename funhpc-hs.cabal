@@ -1,0 +1,108 @@
+cabal-version: 1.12
+
+-- This file has been generated from package.yaml by hpack version 0.31.2.
+--
+-- see: https://github.com/sol/hpack
+--
+-- hash: e409399387826f59bb2d9ad1d007b9b7346b63024c1ba29d209b232f9695649a
+
+name:           funhpc-hs
+version:        0.1.2.0
+synopsis:       Functional HPC Programming (using Haskell)
+description:    Functional HPC Programming (using Haskell)
+category:       Distributed Computing
+homepage:       https://github.com/eschnett/funhpc-hs#readme
+bug-reports:    https://github.com/eschnett/funhpc-hs/issues
+author:         Erik Schnetter <schnetter@gmail.com>
+maintainer:     Erik Schnetter <schnetter@gmail.com>
+license:        Apache-2.0
+license-file:   LICENSE
+build-type:     Simple
+extra-source-files:
+    LICENSE
+    package.yaml
+    README.md
+    stack.yaml
+
+source-repository head
+  type: git
+  location: https://github.com/eschnett/funhpc-hs
+
+library
+  exposed-modules:
+      Control.Distributed.Closure.ClosureDict
+      Control.Distributed.Closure.Static
+      Control.Distributed.MPI.Server
+      Control.Distributed.MPI.World
+      Data.Distributed.Future
+      Data.Distributed.GlobalPtr
+      Data.Distributed.Ref
+  other-modules:
+      Paths_funhpc_hs
+  hs-source-dirs:
+      lib
+  default-extensions: ApplicativeDo BangPatterns BinaryLiterals BlockArguments ConstraintKinds DataKinds DefaultSignatures DeriveFoldable DeriveFunctor DeriveGeneric DeriveLift DeriveTraversable DerivingStrategies EmptyCase ExistentialQuantification FlexibleContexts FlexibleInstances FunctionalDependencies GADTs GeneralizedNewtypeDeriving InstanceSigs KindSignatures LambdaCase MultiParamTypeClasses MultiWayIf NamedFieldPuns OverloadedLists OverloadedStrings ParallelListComp PatternSynonyms QuantifiedConstraints RankNTypes ScopedTypeVariables StandaloneDeriving TupleSections TypeApplications TypeFamilies TypeFamilyDependencies TypeOperators TypeSynonymInstances UnicodeSyntax AllowAmbiguousTypes MonadComprehensions PackageImports PolyKinds TypeInType
+  ghc-options: -foptimal-applicative-do -fprint-potential-instances -funbox-strict-fields -Wall -Wcompat -Wincomplete-record-updates -Wincomplete-uni-patterns -Wredundant-constraints -Wno-unused-matches
+  build-depends:
+      base
+    , binary
+    , bytestring
+    , comonad
+    , constraints
+    , containers
+    , distributed-closure
+    , distributive
+    , monad-loops
+    , mpi-hs >=0.7.0.0
+    , mpi-hs-binary
+    , strict-concurrency
+  default-language: Haskell2010
+
+executable funhpc
+  main-is: Main.hs
+  other-modules:
+      Paths_funhpc_hs
+  hs-source-dirs:
+      src
+  default-extensions: ApplicativeDo BangPatterns BinaryLiterals BlockArguments ConstraintKinds DataKinds DefaultSignatures DeriveFoldable DeriveFunctor DeriveGeneric DeriveLift DeriveTraversable DerivingStrategies EmptyCase ExistentialQuantification FlexibleContexts FlexibleInstances FunctionalDependencies GADTs GeneralizedNewtypeDeriving InstanceSigs KindSignatures LambdaCase MultiParamTypeClasses MultiWayIf NamedFieldPuns OverloadedLists OverloadedStrings ParallelListComp PatternSynonyms QuantifiedConstraints RankNTypes ScopedTypeVariables StandaloneDeriving TupleSections TypeApplications TypeFamilies TypeFamilyDependencies TypeOperators TypeSynonymInstances UnicodeSyntax AllowAmbiguousTypes MonadComprehensions PackageImports PolyKinds TypeInType
+  ghc-options: -foptimal-applicative-do -fprint-potential-instances -funbox-strict-fields -Wall -Wcompat -Wincomplete-record-updates -Wincomplete-uni-patterns -Wredundant-constraints -Wno-unused-matches -rtsopts -threaded -with-rtsopts=-N
+  build-depends:
+      base
+    , binary
+    , distributed-closure
+    , funhpc-hs
+    , hostname
+    , mpi-hs >=0.7.0.0
+    , mpi-hs-binary
+  default-language: Haskell2010
+
+test-suite funhpc-tests
+  type: exitcode-stdio-1.0
+  main-is: Main.hs
+  other-modules:
+      Paths_funhpc_hs
+  hs-source-dirs:
+      test
+  default-extensions: ApplicativeDo BangPatterns BinaryLiterals BlockArguments ConstraintKinds DataKinds DefaultSignatures DeriveFoldable DeriveFunctor DeriveGeneric DeriveLift DeriveTraversable DerivingStrategies EmptyCase ExistentialQuantification FlexibleContexts FlexibleInstances FunctionalDependencies GADTs GeneralizedNewtypeDeriving InstanceSigs KindSignatures LambdaCase MultiParamTypeClasses MultiWayIf NamedFieldPuns OverloadedLists OverloadedStrings ParallelListComp PatternSynonyms QuantifiedConstraints RankNTypes ScopedTypeVariables StandaloneDeriving TupleSections TypeApplications TypeFamilies TypeFamilyDependencies TypeOperators TypeSynonymInstances UnicodeSyntax AllowAmbiguousTypes MonadComprehensions PackageImports PolyKinds TypeInType
+  ghc-options: -foptimal-applicative-do -fprint-potential-instances -funbox-strict-fields -Wall -Wcompat -Wincomplete-record-updates -Wincomplete-uni-patterns -Wredundant-constraints -Wno-unused-matches -rtsopts -threaded -with-rtsopts=-N
+  build-depends:
+      base
+    , funhpc-hs
+    , tasty
+    , tasty-hspec
+  default-language: Haskell2010
+
+benchmark funhpc-benchmarks
+  type: exitcode-stdio-1.0
+  main-is: Main.hs
+  other-modules:
+      Paths_funhpc_hs
+  hs-source-dirs:
+      bench
+  default-extensions: ApplicativeDo BangPatterns BinaryLiterals BlockArguments ConstraintKinds DataKinds DefaultSignatures DeriveFoldable DeriveFunctor DeriveGeneric DeriveLift DeriveTraversable DerivingStrategies EmptyCase ExistentialQuantification FlexibleContexts FlexibleInstances FunctionalDependencies GADTs GeneralizedNewtypeDeriving InstanceSigs KindSignatures LambdaCase MultiParamTypeClasses MultiWayIf NamedFieldPuns OverloadedLists OverloadedStrings ParallelListComp PatternSynonyms QuantifiedConstraints RankNTypes ScopedTypeVariables StandaloneDeriving TupleSections TypeApplications TypeFamilies TypeFamilyDependencies TypeOperators TypeSynonymInstances UnicodeSyntax AllowAmbiguousTypes MonadComprehensions PackageImports PolyKinds TypeInType
+  ghc-options: -foptimal-applicative-do -fprint-potential-instances -funbox-strict-fields -Wall -Wcompat -Wincomplete-record-updates -Wincomplete-uni-patterns -Wredundant-constraints -Wno-unused-matches -rtsopts -threaded -with-rtsopts=-N
+  build-depends:
+      base
+    , criterion
+    , funhpc-hs
+  default-language: Haskell2010
