@@ -50,16 +50,15 @@ newFuture x = Future <$> newMVar x
 
 forkFuture :: IO a -> IO (Future a)
 forkFuture s = do r <- newEmptyFuture
-                  --TODO _ <- forkIO do s >>= putFuture r
                   forkIO_ do s >>= putFuture r
                   return r
-threads :: IORef [ThreadId]
-threads = unsafePerformIO $ newIORef []
+--DEBUG threads :: IORef [ThreadId]
+--DEBUG threads = unsafePerformIO $ newIORef []
 forkIO_ :: IO () -> IO ()
---TODO forkIO_ s = do _ <- forkIO s
---TODO                return ()
-forkIO_ s = do tid <- forkIO s
-               atomicModifyIORef' threads \tids -> (tid:tids, ())
+--DEBUG forkIO_ s = do tid <- forkIO s
+--DEBUG                atomicModifyIORef' threads \tids -> (tid:tids, ())
+--DEBUG                return ()
+forkIO_ s = do _ <- forkIO s
                return ()
 
 putFuture :: Future a -> a -> IO ()

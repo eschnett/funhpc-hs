@@ -34,7 +34,7 @@ import Data.Distributed.GlobalPtr
 
 
 optimizeLocalCalls :: Bool
-optimizeLocalCalls = False      --TODO True
+optimizeLocalCalls = True
 
 
 
@@ -79,14 +79,14 @@ runServer mainTask =
 
 
 
-threads :: IORef [ThreadId]
-threads = unsafePerformIO $ newIORef []
+--DEBUG threads :: IORef [ThreadId]
+--DEBUG threads = unsafePerformIO $ newIORef []
 
 forkIO_ :: IO () -> IO ()
---TODO forkIO_ s = do _ <- forkIO s
---TODO                return ()
-forkIO_ s = do tid <- forkIO s
-               atomicModifyIORef' threads \tids -> (tid:tids, ())
+--DEBUG forkIO_ s = do tid <- forkIO s
+--DEBUG                atomicModifyIORef' threads \tids -> (tid:tids, ())
+--DEBUG                return ()
+forkIO_ s = do _ <- forkIO s
                return ()
 
 

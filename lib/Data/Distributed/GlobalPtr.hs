@@ -9,6 +9,7 @@ module Data.Distributed.GlobalPtr
   , freeGlobalPtr
   ) where
 
+import Control.Concurrent
 import Control.Exception
 import Data.Coerce
 import Data.IORef
@@ -17,6 +18,7 @@ import Foreign
 import Foreign.C.Types
 import GHC.Generics
 import System.IO.Unsafe
+import System.Mem
 import Type.Reflection
 
 import Control.Distributed.Closure hiding (Static(..))
@@ -24,16 +26,15 @@ import Control.Distributed.Closure.Static
 import Data.Binary
 
 import qualified Control.Distributed.MPI.Binary as MPI
--- TODO? import qualified Control.Distributed.MPI.Storable()
 import Control.Distributed.MPI.World
 
 
 
 -- | A pointer to an object that lives on a particular rank
-data GlobalPtr (a :: Type) = GlobalPtr MPI.Rank Word
+data GlobalPtr (a :: Type) = GlobalPtr !MPI.Rank !Word
   deriving (Eq, Ord, Read, Show, Generic)
 
-data Repr a = Repr a (IORef Bool)
+data Repr a = Repr !(MVar a) !(IORef Bool)
 
 fromStablePtr :: StablePtr (Repr a) -> GlobalPtr a
 fromStablePtr sptr =
@@ -52,45 +53,64 @@ checkPtr gptr@(GlobalPtr rank word) =
   do let msptr = toStablePtr gptr
      case msptr of
        Nothing -> return ()
-       Just sptr -> do Repr _ valid <- deRefStablePtr sptr
+       Just sptr -> do Repr mvar valid <- deRefStablePtr sptr
                        val <- readIORef valid
                        assert val $ return ()
+                       emp <- isEmptyMVar mvar
+                       assert (not emp) $ return ()
      return (rank, word)
 
 
 
 instance Typeable a => Binary (GlobalPtr a) where
-  --TODO put (GlobalPtr rank word) = do put rank
-  --TODO                                put word
-  --TODO get = do rank <- get
-  --TODO          word <- get
-  --TODO          return (GlobalPtr rank word)
-  put gptr = let (rank, word) = checkPtr gptr in do put rank
-                                                    put word
+  --DEBUG put gptr = let (rank, word) = checkPtr gptr in do put rank
+  --DEBUG                                                   put word
+  --DEBUG get = do rank <- get
+  --DEBUG          word <- get
+  --DEBUG          let gptr = GlobalPtr rank word
+  --DEBUG          let (rank', word') = checkPtr gptr
+  --DEBUG          return (GlobalPtr rank' word')
+  put (GlobalPtr rank word) = do put rank
+                                 put word
   get = do rank <- get
            word <- get
-           let gptr = GlobalPtr rank word
-           let (rank', word') = checkPtr gptr
-           return (GlobalPtr rank' word')
+           return (GlobalPtr rank word)
+
+-- | Round up 'i' to the next nearest multiple of 'j'. We expect 'i >=
+-- 0' and 'j > 0'. With 'r = alignUp i j' we ensure 'r >= i && r < i +
+-- j'.
+{-# INLINE alignUp #-}
+alignUp :: Integral a => a -> a -> a
+alignUp i j = ((i + j - 1) `div` j) * j
 
 instance Typeable a => Storable (GlobalPtr a) where
-  sizeOf _ = sizeOf (undefined::CInt) + sizeOf (undefined::Word)
-  alignment _ = 1
-  --TODO poke ptr (GlobalPtr rank word) =
-  poke ptr gptr = let (rank, word) = checkPtr gptr in
+  sizeOf _ = let szi = sizeOf (undefined::CInt)
+                 szw = sizeOf (undefined::Word)
+                 alw = alignment (undefined::Word)
+                 offset = alignUp szi alw
+             in offset + szw
+  alignment _ = let ali = alignment (undefined::CInt)
+                    alw = alignment (undefined::Word)
+                in max ali alw
+  --DEBUG poke ptr gptr = let (rank, word) = checkPtr gptr in
+  poke ptr (GlobalPtr rank word) =
     do let irank :: CInt = coerce rank
-       let offset = sizeOf irank
-       pokeByteOff (castPtr ptr) 0 irank
+       let szi = sizeOf (undefined::CInt)
+           alw = alignment (undefined::Word)
+           offset = alignUp szi alw
+       poke (castPtr ptr) irank
        pokeByteOff (castPtr ptr) offset word
   peek ptr =
-    do let offset = sizeOf (undefined::CInt)
-       irank :: CInt <- peekByteOff (castPtr ptr) 0
+    do let szi = sizeOf (undefined::CInt)
+           alw = alignment (undefined::Word)
+           offset = alignUp szi alw
+       irank :: CInt <- peek (castPtr ptr)
        word <- peekByteOff (castPtr ptr) offset
        let rank = coerce irank
-       --TODO return (GlobalPtr rank word)
-       let gptr = GlobalPtr rank word
-       let (rank', word') = checkPtr gptr
-       return (GlobalPtr rank' word')
+       --DEBUG let gptr = GlobalPtr rank word
+       --DEBUG let (rank', word') = checkPtr gptr
+       --DEBUG return (GlobalPtr rank' word')
+       return (GlobalPtr rank word)
 
 instance Static (Typeable a) => Static (Typeable (GlobalPtr a)) where
   closureDict = static dict `cap` closureDict
@@ -115,7 +135,8 @@ instance Static (Typeable a) => Static (Binary (GlobalPtr a)) where
 newGlobalPtr :: a -> IO (GlobalPtr a)
 newGlobalPtr x =
   do valid <- newIORef True
-     sptr <- newStablePtr (Repr x valid)
+     x' <- newMVar x
+     sptr <- newStablePtr (Repr x' valid)
      return (fromStablePtr sptr)
 
 globalPtrRank :: GlobalPtr a -> MPI.Rank
@@ -127,13 +148,44 @@ deRefGlobalPtr gptr = case toStablePtr gptr of
                         Just sptr -> do Repr x valid <- deRefStablePtr sptr
                                         val <- readIORef valid
                                         assert val $ return ()
-                                        return (Just x)
+                                        emp <- isEmptyMVar x
+                                        assert (not emp) $ return ()
+                                        x' <- readMVar x
+                                        return (Just x')
 
 freeGlobalPtr :: GlobalPtr a -> IO ()
 freeGlobalPtr gptr = case toStablePtr gptr of
                        Nothing -> error "Tried to free remote GlobalPtr"
-                       Just sptr -> do Repr _ valid <- deRefStablePtr sptr
+                       Just sptr -> do repr@(Repr x valid) <- deRefStablePtr sptr
                                        val <- readIORef valid
                                        assert val $ return ()
                                        atomicWriteIORef valid False
+                                       emp <- isEmptyMVar x
+                                       assert (not emp) $ return ()
+                                       _ <- takeMVar x
+                                       -- _ <- forkIO $ putStrLn $ "freeGlobalPtr" ++ show gptr
                                        freeStablePtr sptr
+                                       -- performGC
+                                       -- yield
+                                       -- performGC
+                                       -- yield
+                                       -- performGC
+                                       -- yield
+                                       -- performGC
+                                       -- yield
+                                       -- performGC
+                                       -- yield
+                                       -- performGC
+                                       -- yield
+                                       -- performGC
+                                       -- yield
+                                       -- performGC
+                                       -- yield
+                                       -- performGC
+                                       -- yield
+                                       -- performGC
+                                       -- yield
+                                       -- mvar <- newEmptyMVar
+                                       -- ioref <- newIORef False
+                                       -- _ <- newStablePtr (Repr mvar ioref)
+                                       -- return ()

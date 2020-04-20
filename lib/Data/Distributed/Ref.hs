@@ -39,7 +39,7 @@ import Data.Distributed.GlobalPtr
 
 -- Layout of an object. Objects are stored via 'GlobalPtr', which
 -- internally uses 'StablePtr' to allocate and free.
-data Object a = Object { count :: IORef Word
+data Object a = Object { count :: !(IORef Word)
                        , object :: a
                        }
   deriving (Eq, Generic)
@@ -154,21 +154,21 @@ rankRef ref = do gptr <- globalPtrRef ref
 incref :: Static (Typeable a) => Ref a -> IO ()
 incref ref =
   -- Executing this serially avoids the segfault
-  lexec do gptr <- globalPtrRef ref
-           fres <- rcall (globalPtrRank gptr) (increfObjectC gptr)
-           waitFuture fres
-           touchRef ref
-  -- TODO do gptr <- globalPtrRef ref
-  -- TODO    fres <- rcall (globalPtrRank gptr) (increfObjectC gptr)
-  -- TODO    waitFuture fres
-  -- TODO    touchRef ref
+  -- DEBUG lexec do gptr <- globalPtrRef ref
+  -- DEBUG          fres <- rcall (globalPtrRank gptr) (increfObjectC gptr)
+  -- DEBUG          waitFuture fres
+  -- DEBUG          touchRef ref
+  do gptr <- globalPtrRef ref
+     fres <- rcall (globalPtrRank gptr) (increfObjectC gptr)
+     waitFuture fres
+     touchRef ref
 
 decref :: Static (Typeable a) => Ref a -> IO ()
 decref ref = do gptr <- globalPtrRef ref
                 rexec (globalPtrRank gptr) (decrefObjectC gptr)
 
---TODO maybe the finalizer needs to be rooted?
---TODO   idea: put all finalizers into a global list, have the finalizer only activate a list element.
+-- TODO maybe the finalizer needs to be rooted?
+-- TODO   idea: put all finalizers into a global list, have the finalizer only activate a list element.
 
 decref' :: Static (Typeable a) => GlobalPtr (Object a) -> IO ()
 decref' gptr = rexec (globalPtrRank gptr) (decrefObjectC gptr)
@@ -241,7 +241,7 @@ fetchRef2 gptr =
      -- TODO
      -- increfObject gptr
      Just obj <- deRefGlobalPtr gptr
-     checkObject obj
+     -- DEBUG checkObject obj
      -- putStrLn $ "[" ++ show worldRank ++ "] fetchRef2.b " ++ show gptr
      -- return (object obj)
      let !res = object obj
@@ -258,7 +258,7 @@ fetchRef2C gptr = static fetchRef2 `cap` cpure closureDict gptr
 --------------------------------------------------------------------------------
 
 newtype SerializedRef a = SerializedRef (GlobalPtr (Object a))
-  deriving Generic
+  deriving (Eq, Ord, Read, Show, Generic)
 
 instance Static (Typeable a) => Binary (SerializedRef a) where
   put (SerializedRef gptr) = put gptr
@@ -290,14 +290,16 @@ serializeRef ref =
   do gptr <- globalPtrRef ref
      incref ref
      let sref = SerializedRef gptr
+     -- putStrLn $ "serializeRef " ++ show sref
      return sref
 
 deserializeRef :: Static (Typeable a) => SerializedRef a -> IO (Ref a)
-deserializeRef (SerializedRef gptr) =
-  -- Note: Don't decrease the reference count here. We are using up
-  -- the serialized object, and we are creating a reference, which
-  -- combined is refcount-neutral.
-  refFromObject gptr
+deserializeRef sref@(SerializedRef gptr) =
+  do -- putStrLn $ "deserializeRef " ++ show sref
+     -- Note: Don't decrease the reference count here. We are using up
+     -- the serialized object, and we are creating a reference, which
+     -- combined is refcount-neutral.
+     refFromObject gptr
 
 
 

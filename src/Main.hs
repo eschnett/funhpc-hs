@@ -21,14 +21,14 @@ main :: IO ()
 main =
   do hSetBuffering stdout LineBuffering
      runServer
-       do --TODO runBounce
-          --TODO runHostNames
-          --TODO runTreeLCall
+       do runBounce
+          runHostNames
+          runTreeLCall
           runTreeRCall
-          --TODO runSimpleRef
-          --TODO runSimpleLocal
-          --TODO runTreeLocal
-          --TODO runSimpleRemote
+          runSimpleRef
+          runSimpleLocal
+          runTreeLocal
+          runSimpleRemote
           runTreeRemote
 
 
